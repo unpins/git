@@ -1,0 +1,88 @@
+--- a/git.c
++++ b/git.c
+@@ -17,6 +17,7 @@
+ #include "shallow.h"
+ #include "trace.h"
+ #include "trace2.h"
++#include "multicall.h"
+ 
+ #define RUN_SETUP		(1<<0)
+ #define RUN_SETUP_GENTLY	(1<<1)
+@@ -748,6 +749,7 @@
+ 	struct cmd_struct *builtin;
+ 
+ 	strip_extension(args);
++	mc_try_dispatch(args);
+ 	cmd = args->v[0];
+ 
+ 	/* Turn "git cmd --help" into "git help --exclude-guides cmd" */
+--- a/Makefile
++++ b/Makefile
+@@ -2537,7 +2537,34 @@
+ 	'-DGIT_MAN_PATH="$(mandir_relative_SQ)"' \
+ 	'-DGIT_INFO_PATH="$(infodir_relative_SQ)"'
+ 
+-git$X: git.o GIT-LDFLAGS $(BUILTIN_OBJS) $(GITLIBS)
++# === unpins multicall: fold helpers into git binary ===
++unpins_mc_objs := multicall.o daemon.o http-backend.o shell.o sh-i18n--envsubst.o scalar.o
++unpins_mc_programs := git-daemon$X git-http-backend$X git-shell$X git-sh-i18n--envsubst$X scalar$X
++daemon.o:           EXTRA_CPPFLAGS = -Dcmd_main=cmd_daemon_main
++http-backend.o:     EXTRA_CPPFLAGS = -Dcmd_main=cmd_http_backend_main
++shell.o:            EXTRA_CPPFLAGS = -Dcmd_main=cmd_shell_main
++sh-i18n--envsubst.o: EXTRA_CPPFLAGS = -Dcmd_main=cmd_sh_i18n_envsubst_main
++scalar.o:           EXTRA_CPPFLAGS = -Dcmd_main=cmd_scalar_main
++ifndef NO_CURL
++unpins_mc_objs     += remote-curl.o http.o http-walker.o http-fetch.o imap-send.o
++unpins_mc_programs += $(REMOTE_CURL_NAMES) git-http-fetch$X git-imap-send$X
++remote-curl.o: EXTRA_CPPFLAGS = -Dcmd_main=cmd_remote_curl_main
++http-fetch.o:  EXTRA_CPPFLAGS = -Dcmd_main=cmd_http_fetch_main
++imap-send.o:   EXTRA_CPPFLAGS = -Dcmd_main=cmd_imap_send_main
++EXTLIBS += $(CURL_LIBCURL) $(EXPAT_LIBEXPAT) $(IMAP_SEND_LDFLAGS)
++ifndef NO_EXPAT
++unpins_mc_objs     += http-push.o
++unpins_mc_programs += git-http-push$X
++http-push.o: EXTRA_CPPFLAGS = -Dcmd_main=cmd_http_push_main
++endif
++endif
++
++OBJECTS += multicall.o
++
++$(unpins_mc_programs): git$X
++	$(QUIET_LNCP)$(RM) $@ && ln $< $@ 2>/dev/null || ln -s $< $@ 2>/dev/null || cp $< $@
++
++git$X: git.o GIT-LDFLAGS $(BUILTIN_OBJS) $(GITLIBS) $(unpins_mc_objs)
+ 	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) \
+ 		$(filter %.o,$^) $(LIBS)
+ 
+@@ -2890,30 +2917,10 @@
+ git-%$X: %.o GIT-LDFLAGS $(GITLIBS)
+ 	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) $(LIBS)
+ 
+-git-imap-send$X: imap-send.o $(IMAP_SEND_BUILDDEPS) GIT-LDFLAGS $(GITLIBS)
+-	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) \
+-		$(IMAP_SEND_LDFLAGS) $(LIBS)
+-
+-git-http-fetch$X: http.o http-walker.o http-fetch.o GIT-LDFLAGS $(GITLIBS)
+-	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) \
+-		$(CURL_LIBCURL) $(LIBS)
+-git-http-push$X: http.o http-push.o GIT-LDFLAGS $(GITLIBS)
+-	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) \
+-		$(CURL_LIBCURL) $(EXPAT_LIBEXPAT) $(LIBS)
+ 
+-$(REMOTE_CURL_ALIASES): $(REMOTE_CURL_PRIMARY)
+-	$(QUIET_LNCP)$(RM) $@ && \
+-	ln $< $@ 2>/dev/null || \
+-	ln -s $< $@ 2>/dev/null || \
+-	cp $< $@
+ 
+-$(REMOTE_CURL_PRIMARY): remote-curl.o http.o http-walker.o GIT-LDFLAGS $(GITLIBS)
+-	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) \
+-		$(CURL_LIBCURL) $(EXPAT_LIBEXPAT) $(LIBS)
+ 
+-scalar$X: scalar.o GIT-LDFLAGS $(GITLIBS)
+-	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) \
+-		$(filter %.o,$^) $(LIBS)
++
+ 
+ $(LIB_FILE): $(LIB_OBJS)
+ 	$(QUIET_AR)$(RM) $@ && $(AR) $(ARFLAGS) $@ $^
