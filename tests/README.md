@@ -90,6 +90,30 @@ interceptar em outro ponto (provavelmente em `run-command.c::prepare_cmd`
 ou via wrapper de `git_external_diff`). Não é resolvido por essa
 infraestrutura de teste.
 
+## Resultado típico
+
+Em x86_64-linux com este commit, a `--all` rende:
+
+```
+1013 scripts / 31944 asserts
+  pass:           30753 (96.3%)
+  known-broken:     266 (upstream `# TODO`, esperado)
+  fail:              13 (0.04%)
+```
+
+**Todas as 13 falhas reproduzem identicamente contra o `gitMinimal` stock
+do nixpkgs** (i.e. zero regressões nossas), e se enquadram em:
+
+- **musl libiconv** (3+1+2): UTF-16/UTF-32/eucJP/ISO-2022-JP indisponíveis
+  no glibc-replacement do build estático. t0028, t2082, t3434.
+- **musl POSIX regex** (2): `.` não trata codepoints UTF-8 multibyte como
+  uma unidade. t7810.
+- **libcurl cookie path normalization** (3): versões recentes do curl
+  removem o trailing slash em paths de cookie. t5551/t5559/t5563.
+- **trade-off arquitetural multicall** (2): `_run_dashed_` trace event
+  nunca é emitido porque o fork+exec que normalmente o produziria é
+  short-circuited. t0211 — intencional.
+
 ## Tests que naturalmente serão pulados/falham
 
 - **`t5550-http-fetch-dumb.sh` e amigos** (http): exigem apache em PATH (incluso
