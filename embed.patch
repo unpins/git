@@ -29,6 +29,33 @@
  	if (use_pager == -1 && !is_builtin(argv[0]))
  		use_pager = check_pager_config(the_repository, argv[0]);
  	commit_pager_choice();
+@@ -930,6 +938,26 @@
+ 
+ 	trace_command_performance(argv);
+ 
++	/* Pre-extract embedded scripts (libexec/git-core helpers stored as
++	 * blobs in the binary) to a tmpdir and override GIT_EXEC_PATH so any
++	 * PATH lookup for the helpers — including GIT_EXTERNAL_DIFF and
++	 * mergetool invocations that bypass execv_dashed_external — succeeds. */
++	unpins_prefab_all();
++
++	/* Multicall dispatch for helpers invoked as their basename without
++	 * a `git-` prefix (`scalar`). Helpers WITH the prefix (`git-daemon`,
++	 * `git-shell`, …) hit the same dispatch path further down via
++	 * skip_prefix → handle_builtin. mc_try_dispatch is a no-op when cmd
++	 * doesn't match; on match it calls the helper's renamed cmd_main and
++	 * exits — never returns to here. */
++	{
++		struct strvec mc = STRVEC_INIT;
++		strvec_push(&mc, cmd);
++		strvec_pushv(&mc, argv + 1);
++		mc_try_dispatch(&mc);
++		strvec_clear(&mc);
++	}
++
+ 	/*
+ 	 * "git-xxxx" is the same as "git xxxx", but we obviously:
+ 	 *
 --- a/Makefile
 +++ b/Makefile
 @@ -2564,9 +2564,9 @@

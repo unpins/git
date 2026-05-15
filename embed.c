@@ -223,6 +223,128 @@ const struct embed_entry *unpins_find_dashed(const char *short_name)
     return NULL;
 }
 
+/* Pre-extract every entry in the embed index to a single tmpdir and
+ * point GIT_EXEC_PATH at it. Called from cmd_main() so that ALL paths
+ * which look up libexec/git-core helpers — execv_dashed_external,
+ * run_command(GIT_EXTERNAL_DIFF=...), mergetool, fetch hooks — find the
+ * scripts via the regular PATH lookup. Without this, helpers invoked
+ * via GIT_EXTERNAL_DIFF (e.g. `git-difftool--helper`) get ENOENT because
+ * unpins_run_embedded only fires from execv_dashed_external.
+ *
+ * Idempotent and policy-respecting:
+ *   - If UNPINS_GIT_PREFAB is set (a previous invocation of this binary
+ *     already prepared a tmpdir), no-op. Re-entries via the sh-shim
+ *     shebang fall in this branch.
+ *   - If GIT_EXEC_PATH is set externally (test framework or user
+ *     override), no-op. The caller is asserting control over libexec
+ *     and we honor that.
+ *
+ * On failure (mkdtemp / extract / setenv) we leave the env vars unset
+ * and return; callers fall through to the pre-prefab paths (where
+ * unpins_run_embedded acts as a per-helper fallback). */
+void unpins_prefab_all(void)
+{
+    if (getenv("UNPINS_GIT_PREFAB"))
+        return;
+    if (getenv("GIT_EXEC_PATH"))
+        return;
+
+    char tmp_template[] = "/tmp/unpins-git.XXXXXX";
+    if (!mkdtemp(tmp_template))
+        return;
+    snprintf(active_tmpdir, sizeof active_tmpdir, "%s", tmp_template);
+    atexit(cleanup_tmpdir);
+    {
+        struct sigaction sa = { 0 };
+        sa.sa_handler = cleanup_signal;
+        sa.sa_flags = SA_RESETHAND;
+        sigaction(SIGINT,  &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+        sigaction(SIGHUP,  &sa, NULL);
+    }
+
+    char self_exe[PATH_MAX];
+    if (resolve_self_exe(self_exe, sizeof self_exe) != 0) {
+        cleanup_tmpdir();
+        return;
+    }
+
+    char exec_path[PATH_MAX];
+    snprintf(exec_path, sizeof exec_path, "%s/libexec/git-core",
+             active_tmpdir);
+    if (mkdir_p(exec_path) != 0) {
+        cleanup_tmpdir();
+        return;
+    }
+
+    /* Re-export the original libexec/git-core via symlinks so the C
+     * helpers (sh-i18n--envsubst, remote-curl, http-backend, …) and the
+     * builtin trampolines stay reachable when we point GIT_EXEC_PATH at
+     * our tmpdir. The originals live at ../libexec/git-core relative to
+     * the running binary in standard nixpkgs / Autotools layouts. */
+    char libexec_orig[PATH_MAX];
+    const char *bin_slash = strrchr(self_exe, '/');
+    if (bin_slash) {
+        size_t prefix_len = (size_t)(bin_slash - self_exe);
+        snprintf(libexec_orig, sizeof libexec_orig,
+                 "%.*s/../libexec/git-core",
+                 (int)prefix_len, self_exe);
+        DIR *d = opendir(libexec_orig);
+        if (d) {
+            struct dirent *de;
+            char src[PATH_MAX], dst[PATH_MAX], resolved[PATH_MAX];
+            while ((de = readdir(d))) {
+                if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+                    continue;
+                snprintf(src, sizeof src, "%s/%s", libexec_orig, de->d_name);
+                /* Skip directories. If we symlinked e.g. `mergetools/` to
+                 * the real subdir, the embed extraction below would write
+                 * `mergetools/<file>` *through* the symlink into the
+                 * source tree, and rmrf during cleanup would follow the
+                 * symlink and wipe the originals. Mergetools/* entries
+                 * come from the embed index instead. */
+                struct stat st;
+                if (lstat(src, &st) == 0 && S_ISDIR(st.st_mode))
+                    continue;
+                /* realpath collapses ../ and resolves relative symlinks
+                 * (libexec helpers in nixpkgs are symlinks like
+                 * `git-daemon -> ../../bin/git`). Without this the symlink
+                 * we create would point to a non-existent path under
+                 * our tmpdir. */
+                if (!realpath(src, resolved))
+                    continue;
+                snprintf(dst, sizeof dst, "%s/%s", exec_path, de->d_name);
+                /* Best-effort; ignore failures. */
+                (void)symlink(resolved, dst);
+            }
+            closedir(d);
+        }
+    }
+
+    /* Extract embed entries, overwriting any pre-staged symlink for the
+     * same path. mergetools/* lands in <exec_path>/mergetools/ which
+     * extract_one creates via mkdir_p. */
+    for (size_t i = 0; i < unpins_embed_count; i++) {
+        const struct embed_entry *e = &unpins_embed_index[i];
+        /* If a symlink was pre-staged for this name, remove it so the
+         * fresh write isn't blocked by an existing file (O_CREAT|O_TRUNC
+         * on a symlink follows the symlink, possibly outside tmpdir). */
+        char dst[PATH_MAX];
+        snprintf(dst, sizeof dst, "%s/%s", exec_path, e->name);
+        unlink(dst);
+        /* mode 0755 entries are executed via the kernel (shebang
+         * matters); mode 0644 entries are `.`-sourced (shebang ignored). */
+        int rewrite = (e->mode & 0111) ? 1 : 0;
+        if (extract_one(active_tmpdir, e, rewrite, self_exe) != 0) {
+            cleanup_tmpdir();
+            return;
+        }
+    }
+
+    setenv("GIT_EXEC_PATH", exec_path, 1);
+    setenv("UNPINS_GIT_PREFAB", exec_path, 1);
+}
+
 int unpins_run_embedded(const char **argv, int *out_status)
 {
     const struct embed_entry *root = unpins_find_dashed(argv[0]);

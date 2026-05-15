@@ -52,6 +52,23 @@ void mc_try_dispatch(struct strvec *args)
 
 	if (args->nr)
 		DUP_ARRAY(argv_copy, args->v, args->nr + 1);
+
+	/* Re-prefix argv[0] with "git-" for helpers whose own code paths
+	 * fork+exec themselves by argv[0] (e.g. daemon copies its argv into
+	 * the per-connection child via cld_argv; if argv[0] is bare "daemon"
+	 * the child execvp's PATH first hit is /usr/bin/daemon — the BSD
+	 * daemon(1) — and the spawn dies with "unrecognized option --serve").
+	 * Stock git ships these as standalone binaries named "git-<foo>", so
+	 * their argv[0] is already prefixed in the upstream code path; the
+	 * multicall short-circuit must restore that invariant. scalar uses
+	 * its bare basename in subcommand dispatch logic and doesn't fork by
+	 * argv[0], so we leave it alone. */
+	char prefixed[256];
+	if (argv_copy && strcmp(cmd, "scalar") != 0) {
+		snprintf(prefixed, sizeof prefixed, "git-%s", cmd);
+		argv_copy[0] = prefixed;
+	}
+
 	trace2_cmd_name(cmd);
 	ret = helper(args->nr, argv_copy);
 	strvec_clear(args);

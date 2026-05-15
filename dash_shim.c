@@ -20,8 +20,13 @@ int cmd_sh_shim(int argc, const char **argv, const char *prefix,
     (void)prefix;
     (void)repo;
 
-    if (argc < 2) {
-        fprintf(stderr, "usage: git sh-shim <script> [args...]\n");
+    if (argc < 2 || !strcmp(argv[1], "-h")) {
+        /* Convention all git builtins follow: rc 129 + usage on stdout
+         * for -h; t/t0012-help.sh asserts this for every entry in the
+         * builtin table. Without the explicit branch dash sees "-h" as
+         * its own flag and dies "Illegal option -h" on stderr (rc 2). */
+        FILE *out = (argc >= 2 && !strcmp(argv[1], "-h")) ? stdout : stderr;
+        fprintf(out, "usage: git sh-shim <script> [args...]\n");
         return 129;
     }
 

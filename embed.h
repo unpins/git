@@ -37,11 +37,25 @@ extern const size_t unpins_embed_count;
  * Returns the manifest entry whose name is "git-<short_name>", or NULL. */
 const struct embed_entry *unpins_find_dashed(const char *short_name);
 
+/* Called once from cmd_main(). Extracts every embed entry to a fresh
+ * /tmp dir and points GIT_EXEC_PATH at it, so that helpers invoked via
+ * GIT_EXTERNAL_DIFF / run_command (and any other PATH-based lookup of
+ * libexec/git-core) succeed. Idempotent: no-ops when UNPINS_GIT_PREFAB
+ * is set (re-entry via sh-shim) or when GIT_EXEC_PATH is already set
+ * externally (test framework / user override). */
+void unpins_prefab_all(void);
+
 /* Called as the first step of execv_dashed_external. If short_name maps
  * to an embedded script, this function extracts the closure, runs it in
  * a child process, writes the exit status to *out_status, and returns 1.
  * Returns 0 on miss (caller falls through to its existing exec path) or
- * on any extraction error (also fall through). */
+ * on any extraction error (also fall through).
+ *
+ * In the common path this function is unreachable for embedded scripts —
+ * unpins_prefab_all() already exposed them via GIT_EXEC_PATH, so the
+ * caller resolves the helper through normal PATH lookup and never gets
+ * here. Kept as a defensive fallback for the case where prefab failed
+ * (e.g. /tmp unwritable). */
 int unpins_run_embedded(const char **argv, int *out_status);
 
 /* The `git sh-shim <script> [args...]` builtin entry. */
