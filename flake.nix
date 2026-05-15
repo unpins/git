@@ -17,6 +17,37 @@
 
       pkgsFor = system: import nixpkgs { inherit system; };
 
+      # libidn2 (gnulib) defines a global `error` that collides with git's
+      # usage.c at static-link time. Localize the symbol in the archive so
+      # libidn2's internal callers still resolve to their now-local copy
+      # and `error` outside the archive becomes uniquely git's. Avoids
+      # `LDFLAGS=-Wl,--allow-multiple-definition`, which papers over the
+      # collision instead of fixing it.
+      #
+      # Applied via `.overrideAttrs` threaded through curl/libpsl rather
+      # than an overlay — overlays here invalidate `pkgsBuildHost.stdenv`
+      # and force a full gcc rebuild for byte-identical output (see
+      # nix-lib/flake.nix:204 comment).
+      withLocalizedLibidn2 = staticPkgs:
+        let
+          libidn2Fixed = staticPkgs.libidn2.overrideAttrs (old: {
+            postInstall = (old.postInstall or "") + ''
+              if [ -f "$out/lib/libidn2.a" ]; then
+                chmod u+w "$out/lib/libidn2.a"
+                $OBJCOPY --localize-symbol=error "$out/lib/libidn2.a"
+              fi
+            '';
+          });
+          # libpsl re-calls libidn2 in its args; re-thread the fixed one
+          # so curl gets the same instance from both providers.
+          libpslFixed = staticPkgs.libpsl.override { libidn2 = libidn2Fixed; };
+          curlFixed = staticPkgs.curl.override {
+            libidn2 = libidn2Fixed;
+            libpsl  = libpslFixed;
+          };
+        in
+        staticPkgs.gitMinimal.override { curl = curlFixed; };
+
       # ---------------------------------------------------------------------
       # Multicall override: drops multicall.[ch] into the source tree and
       # applies multicall.patch to fold every libexec helper into the main
@@ -44,7 +75,13 @@
       # .o into the main git$X with -Dcmd_main=cmd_<name>_main. Anchors
       # are stable across git >= 2.51; the patch fails loud on drift.
       # ---------------------------------------------------------------------
-      multicallOverride = pkgs: gitBase:
+      # `withEmbed` controls whether to apply embed.patch + bundle.nix.
+      # Linux/Darwin: true (ships an embedded dash + the shell-script
+      # helpers).  Cross-mingw: false until bundle.nix can build dash for
+      # mingw (`docs/platforms/mingw.md` notes dash needs a separate
+      # cross-mingw build — task tracked in
+      # [[unpins-git-windows-port-in-progress]]).
+      multicallOverride = { withEmbed ? true }: pkgs: gitBase:
         # buildPackages so the coreutils/find tools used in postInstall
         # are build-host binaries, not cross-targets. For native builds
         # buildPackages == pkgs (same drvs) so this costs nothing.
@@ -55,12 +92,15 @@
           # a per-script `. source` dep graph). embed.patch wires it all
           # into git's link line and adds a `git sh-shim` builtin that
           # invokes dash_main on the extracted script.
-          bundle = import ./bundle.nix { inherit pkgs; };
+          bundle = if withEmbed then import ./bundle.nix { inherit pkgs; } else null;
         in
         gitBase.overrideAttrs (old: {
           pname = (old.pname or "git") + "-multicall";
 
-          patches = (old.patches or [ ]) ++ [ ./multicall.patch ./embed.patch ];
+          patches = (old.patches or [ ]) ++ [
+            ./multicall.patch
+            ./scalar-rename-load-builtin.patch
+          ] ++ nixpkgs.lib.optional withEmbed ./embed.patch;
 
           configureFlags = (old.configureFlags or [ ]) ++ [
             # Force-enable curl detection. autoconf's AC_CHECK_LIB tries to
@@ -69,14 +109,6 @@
             # into the link line. The cache var bypasses the probe and the
             # actual git build links via $(CURL_LIBCURL) which has the chain.
             "ac_cv_lib_curl_curl_global_init=yes"
-          ];
-
-          makeFlags = (old.makeFlags or [ ]) ++ [
-            # libidn2 (gnulib) defines a global `error` that conflicts with
-            # git's usage.c. NIX_LDFLAGS would also apply during configure
-            # and break "C compiler can create executables"; keep this
-            # make-time only.
-            "LDFLAGS=-Wl,--allow-multiple-definition"
           ];
 
           # Skip the t/ test suite — we only ship binaries and the suite
@@ -91,6 +123,8 @@
           postPatch = (old.postPatch or "") + ''
             cp ${./multicall.c}     multicall.c
             cp ${./multicall.h}     multicall.h
+            chmod u+w multicall.c multicall.h
+          '' + nixpkgs.lib.optionalString withEmbed ''
             cp ${./embed.c}         embed.c
             cp ${./embed.h}         embed.h
             cp ${./dash_shim.c}     dash_shim.c
@@ -98,7 +132,7 @@
             cp ${bundle}/embed_index.c embed_index.c
             cp ${bundle}/dash.h        dash.h
             cp ${bundle}/libdash.a     libdash.a
-            chmod u+w multicall.c multicall.h embed.c embed.h dash_shim.c \
+            chmod u+w embed.c embed.h dash_shim.c \
                       embed_data.c embed_index.c dash.h libdash.a
           '';
 
@@ -168,10 +202,145 @@
       # ---------------------------------------------------------------------
       mkNative = system:
         let pkgs = pkgsFor system;
-        in multicallOverride pkgs pkgs.pkgsStatic.gitMinimal;
+        in multicallOverride { } pkgs (withLocalizedLibidn2 pkgs.pkgsStatic);
+
+      # ---------------------------------------------------------------------
+      # Cross-mingw build (x86_64 Windows). Runs on x86_64-linux runners.
+      #
+      # `mingwStaticCross` from nix-lib gives us the cross set with the
+      # static-libs adapter + libidn2 `error` localize + libpsl/libunistring
+      # propagation already in place. We thread a Schannel curl through
+      # gitMinimal.override so curl avoids the openssl static-link autoconf
+      # probe pitfalls (same recipe as `unpins/curl`).
+      #
+      # `withEmbed = false`: bundle.nix builds dash for the host platform.
+      # Cross-mingw needs dash built for mingw too; until that exists,
+      # ship the binary without embedded shell scripts. Most git workflows
+      # (clone/commit/push/fetch via C builtins) work without them; the
+      # broken ones are submodule/mergetool/p4/cvs/instaweb — which we
+      # already remove from libexec/git-core in multicallOverride.
+      # ---------------------------------------------------------------------
+      mkMingw =
+        let
+          pkgs = pkgsFor "x86_64-linux";
+          cross = ulib.mingwStaticCross pkgs;
+
+          # Schannel-based static curl — same shape as unpins/curl.
+          curlSchannel = ulib.mingwStaticBinary {
+            pkg = cross.curl.override {
+              opensslSupport = false;
+              scpSupport     = false;
+              http3Support   = false;
+              libssh2        = null;
+              brotliSupport  = false;
+              zstdSupport    = false;
+            };
+            filterConfigureFlag = f: f != "--without-ssl";
+            extraConfigureFlags = [ "--with-schannel" ];
+            extraCFlags = [ "-DCURL_STATICLIB" "-DNGHTTP2_STATICLIB" "-DPSL_STATIC" ];
+          };
+
+          # gitMinimal with mingw-specific fixes layered on. Each item is
+          # documented in `docs/platforms/mingw.md#git`.
+          gitMingw = (cross.gitMinimal.override {
+            # Build-host tools used only in postInstall shebang rewriting
+            # of scripts we delete anyway. buildPackages.* avoids spurious
+            # cross-mingw builds of bash/gawk/sed/grep/coreutils.
+            bash      = pkgs.bash;
+            gawk      = pkgs.gawk;
+            gnused    = pkgs.gnused;
+            gnugrep   = pkgs.gnugrep;
+            coreutils = pkgs.coreutils;
+            curl      = curlSchannel;
+          }).overrideAttrs (old: {
+            # make-shell-wrapper-hook drags target bash via
+            # `targetPackages.runtimeShell`; gitMinimal has perlSupport=false
+            # so wrapProgram is never called → hook is dead weight.
+            nativeBuildInputs = builtins.filter
+              (x: !(builtins.isAttrs x
+                    && (x.pname or x.name or "") == "make-shell-wrapper-hook"))
+              (old.nativeBuildInputs or [ ]);
+
+            # autoconf's headers clash with compat/win32/*.h; git's Makefile
+            # has a complete MINGW path. Skip configure → Makefile-only.
+            dontConfigure = true;
+
+            patches = (old.patches or [ ]) ++ [
+              # compat/win32/pthread.h gates the pthread_sigmask stub by
+              # __MINGW64_VERSION_MAJOR, but defines PTHREAD_H first so the
+              # real winpthreads <pthread.h> is never included → implicit
+              # decl. Drop the gate.
+              ./mingw-pthread-sigmask.patch
+            ];
+
+            # Avoid libssp-0.dll (no static stack-protector runtime in
+            # mingw-w64; -fno-stack-protector drops the dep entirely).
+            env = (old.env or { }) // {
+              NIX_CFLAGS_COMPILE =
+                (old.env.NIX_CFLAGS_COMPILE or "") + " -fno-stack-protector";
+            };
+
+            makeFlags =
+              # ZLIB_NG=1 has no static .a in cross zlib-ng.
+              (builtins.filter (f: f != "ZLIB_NG=1") (old.makeFlags or [ ])) ++ [
+                "uname_S=MINGW"             # else autoconf injects MSVC flags
+                "MSYSTEM=MINGW64"           # else -D_USE_32BIT_TIME_T trips _WIN64
+                "NO_GETTEXT=YesPlease"      # libintl.h absent
+                "USE_LIBPCRE="              # MINGW block sets =YesPlease unconditionally
+                "INSTALL=install"           # else hardcoded /bin/install fails
+                # Schannel curl => no openssl in tree. imap-send.c
+                # references openssl directly; route its TLS through curl
+                # (which uses Schannel) and disable any direct openssl use.
+                "NO_OPENSSL=YesPlease"
+                "USE_CURL_FOR_IMAP_SEND=YesPlease"
+                "CC=${pkgs.pkgsCross.mingwW64.stdenv.cc.targetPrefix}gcc"
+                "AR=${pkgs.pkgsCross.mingwW64.stdenv.cc.targetPrefix}ar"
+                "RC=${pkgs.pkgsCross.mingwW64.stdenv.cc.targetPrefix}windres -O coff"
+                "CURL_CONFIG=${curlSchannel.dev}/bin/curl-config"
+                # MINGW Makefile block sets EXTLIBS += -lws2_32 -lntdll
+                # and multicall.patch adds EXTLIBS += $(CURL_LIBCURL)
+                # $(EXPAT_LIBEXPAT); a command-line `EXTLIBS=...` CLOBBERS
+                # those additions. Re-include -lcurl/-lexpat and the
+                # whole static curl provider chain (nghttp2/psl/idn2/
+                # unistring/iconv) plus Windows Schannel deps (crypt32/
+                # bcrypt/advapi32 for CertFreeCertificateContext etc.).
+                # Order matters: consumer before provider for single-pass
+                # static linking.
+                # Windows-system libs needed by Schannel curl:
+                #   secur32   -> InitSecurityInterfaceA (SSPI provider table)
+                #   iphlpapi  -> if_nametoindex (curl's interface scoping)
+                #   crypt32   -> Cert* (Schannel cert chain validation)
+                #   bcrypt    -> BCrypt* (Schannel symmetric/AEAD)
+                #   ws2_32    -> sockets
+                #   ntdll/advapi32 -> RtlGenRandom, registry, etc.
+                "EXTLIBS=-lcurl -lexpat -lnghttp2 -lpsl -lidn2 -lunistring -liconv -lz -lws2_32 -lcrypt32 -lsecur32 -liphlpapi -lntdll -lbcrypt -ladvapi32"
+              ];
+
+            # nixpkgs install of MINGW git leaves bare-name symlinks
+            # (`bin/git-http-backend` → `git`) that don't resolve because
+            # the real file is `git.exe`. Re-link with `.exe` suffixed.
+            postInstall = (old.postInstall or "") + ''
+              for f in $out/bin/*; do
+                if [ -L "$f" ] && [ ! -e "$f" ]; then
+                  tgt=$(readlink "$f")
+                  if [ -e "$out/bin/$tgt.exe" ] || [ -e "$tgt.exe" ]; then
+                    rm "$f"; ln -s "$tgt.exe" "$f.exe"
+                  fi
+                fi
+              done
+            '';
+          });
+        in
+        multicallOverride { withEmbed = false; } pkgs gitMingw;
     in
     {
-      packages = ulib.forAllNative (system: { default = mkNative system; });
+      packages =
+        let nativePackages = ulib.forAllNative (system: { default = mkNative system; });
+        in nativePackages // {
+          x86_64-linux = nativePackages.x86_64-linux // {
+            "windows-x86_64" = mkMingw;
+          };
+        };
 
       apps = ulib.forAllNative (system: {
         default = {

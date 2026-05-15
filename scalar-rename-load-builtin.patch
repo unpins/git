@@ -1,0 +1,30 @@
+Rename scalar.c's stub `load_builtin_commands` to avoid colliding with
+git.c's real definition when scalar.o is linked into git.exe via the
+multicall pipeline.
+
+The function in scalar.c is a dummy `die("not implemented")` stub kept
+only so that scalar's standalone executable can satisfy the unresolved
+symbol pulled by help.c. Under our multicall build, git.c provides the
+real implementation and the stub becomes both unnecessary and an active
+hazard (link-time collision) — rename it so the symbol disappears from
+scalar.o. Standalone scalar is no longer built in this tree.
+
+--- a/scalar.c
++++ b/scalar.c
+@@ -413,11 +413,12 @@ static int delete_enlistment(struct strbuf *enlistment)
+ }
+
+ /*
+- * Dummy implementation; Using `get_version_info()` would cause a link error
+- * without this.
++ * Renamed from `load_builtin_commands` to `scalar_load_builtin_commands`
++ * so this dummy doesn't collide with git.c's real implementation when
++ * scalar.o is folded into git.exe by the unpins multicall pipeline.
+  */
+-void load_builtin_commands(const char *prefix UNUSED,
+-			   struct cmdnames *cmds UNUSED)
++void scalar_load_builtin_commands(const char *prefix UNUSED,
++				  struct cmdnames *cmds UNUSED)
+ {
+ 	die("not implemented");
+ }
