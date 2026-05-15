@@ -347,6 +347,16 @@ void unpins_prefab_all(void)
 
 int unpins_run_embedded(const char **argv, int *out_status)
 {
+    /* If the prefab already exposed the helpers (or the caller set
+     * GIT_EXEC_PATH explicitly — e.g. a test harness pointing at a
+     * staged libexec), the regular PATH lookup will find the helper
+     * there. Bypass the per-helper fallback so we don't shadow the
+     * caller's libexec with our embed stubs. */
+    if (getenv("UNPINS_GIT_PREFAB"))
+        return 0;
+    if (getenv("GIT_EXEC_PATH"))
+        return 0;
+
     const struct embed_entry *root = unpins_find_dashed(argv[0]);
     if (!root) return 0;
 

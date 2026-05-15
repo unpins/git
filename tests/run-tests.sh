@@ -80,28 +80,45 @@ chmod -R u+w "$TREE"
 # essa reescrita, o /bin/sh do host (bash em distros) interpretaria os
 # scripts e estaríamos testando uma combinação que não existe em produção.
 blue "==> Restoring upstream scripts in libexec/git-core/..."
+# Apontamos para as versões processadas (sem extensão) que o `make all` do
+# stock build emitiu — `@SHELL_PATH@`, `@USE_GETTEXT_SCHEME@`,
+# `@@GITPERLLIB@@`, etc. já foram substituídos. Os .sh/.perl/.py raw na
+# raiz do source ainda têm placeholders e quebram t0201-gettext-fallbacks
+# (`@USE_GETTEXT_SCHEME@` em vez de `fallthrough`), entre outros.
+#
+# Os processados de scripts perl/python que o stock build NÃO instala
+# (git-svn, git-send-email — perl modules Git::SVN / Mail::* required) só
+# existem porque rodamos `make all` no source. Providamos no test tree
+# para que t91xx (svn) e t9001 (send-email) exerçam o fluxo real em vez
+# de falhar todos por "is not a git command". GITPERLLIB do test-lib
+# (set via GIT-BUILD-OPTIONS) já aponta para perl/build/lib/ no source.
 declare -A SCRIPT_SRC=(
-  [git-archimport]="$SRC_DIR/git-archimport.perl"
-  [git-cvsexportcommit]="$SRC_DIR/git-cvsexportcommit.perl"
-  [git-cvsimport]="$SRC_DIR/git-cvsimport.perl"
-  [git-cvsserver]="$SRC_DIR/git-cvsserver.perl"
-  [git-difftool--helper]="$SRC_DIR/git-difftool--helper.sh"
-  [git-filter-branch]="$SRC_DIR/git-filter-branch.sh"
-  [git-instaweb]="$SRC_DIR/git-instaweb.sh"
-  [git-merge-octopus]="$SRC_DIR/git-merge-octopus.sh"
-  [git-merge-one-file]="$SRC_DIR/git-merge-one-file.sh"
-  [git-merge-resolve]="$SRC_DIR/git-merge-resolve.sh"
-  [git-mergetool]="$SRC_DIR/git-mergetool.sh"
-  [git-mergetool--lib]="$SRC_DIR/git-mergetool--lib.sh"
-  [git-quiltimport]="$SRC_DIR/git-quiltimport.sh"
-  [git-request-pull]="$SRC_DIR/git-request-pull.sh"
-  [git-sh-i18n]="$SRC_DIR/git-sh-i18n.sh"
-  [git-sh-setup]="$SRC_DIR/git-sh-setup.sh"
-  [git-submodule]="$SRC_DIR/git-submodule.sh"
-  [git-web--browse]="$SRC_DIR/git-web--browse.sh"
-  [git-p4]="$SRC_DIR/git-p4.py"
-  [git-gui--askpass]="$SRC_DIR/git-gui/git-gui--askpass.sh"
+  [git-archimport]="$SRC_DIR/git-archimport"
+  [git-cvsexportcommit]="$SRC_DIR/git-cvsexportcommit"
+  [git-cvsimport]="$SRC_DIR/git-cvsimport"
+  [git-cvsserver]="$SRC_DIR/git-cvsserver"
+  [git-difftool--helper]="$SRC_DIR/git-difftool--helper"
+  [git-filter-branch]="$SRC_DIR/git-filter-branch"
+  [git-instaweb]="$SRC_DIR/git-instaweb"
+  [git-merge-octopus]="$SRC_DIR/git-merge-octopus"
+  [git-merge-one-file]="$SRC_DIR/git-merge-one-file"
+  [git-merge-resolve]="$SRC_DIR/git-merge-resolve"
+  [git-mergetool]="$SRC_DIR/git-mergetool"
+  [git-mergetool--lib]="$SRC_DIR/git-mergetool--lib"
+  [git-quiltimport]="$SRC_DIR/git-quiltimport"
+  [git-request-pull]="$SRC_DIR/git-request-pull"
+  [git-sh-i18n]="$SRC_DIR/git-sh-i18n"
+  [git-sh-setup]="$SRC_DIR/git-sh-setup"
+  [git-submodule]="$SRC_DIR/git-submodule"
+  [git-web--browse]="$SRC_DIR/git-web--browse"
+  [git-p4]="$SRC_DIR/git-p4"
+  [git-gui--askpass]="$SRC_DIR/git-gui/git-gui--askpass"
+  # git-subtree vive em contrib/ e não é built por `make all` (precisa
+  # de `make -C contrib/subtree`). O arquivo .sh não tem placeholders
+  # significativos, então o raw funciona.
   [git-subtree]="$SRC_DIR/contrib/subtree/git-subtree.sh"
+  [git-svn]="$SRC_DIR/git-svn"
+  [git-send-email]="$SRC_DIR/git-send-email"
 )
 for name in "${!SCRIPT_SRC[@]}"; do
   src="${SCRIPT_SRC[$name]}"
@@ -119,14 +136,22 @@ if [ -d "$SRC_DIR/mergetools" ]; then
   cp -a "$SRC_DIR/mergetools/." "$TREE/libexec/git-core/mergetools/"
 fi
 
-# 3b) Reescrever o shebang dos scripts restaurados (mode 0755) para
+# 3b) Reescrever o shebang dos scripts SHELL (mode 0755, source `.sh`) para
 # `#!<canonical_git> sh-shim`. Isso garante que quando o kernel exec o
 # script, ele exec o nosso git, que entra em cmd_sh_shim -> dash_main —
-# exatamente o caminho dos scripts extraídos pelo embed em produção. Os
-# scripts sourced (mode 0644: git-sh-setup, git-sh-i18n, git-mergetool--lib,
-# mergetools/*) não passam pelo kernel exec, então deixamos o shebang
-# original (dash ignora a linha quando carrega via `.`).
-blue "==> Rewriting shebangs to '#!<git> sh-shim' (forces our embedded dash)..."
+# exatamente o caminho dos scripts extraídos pelo embed em produção.
+#
+# NÃO mexer:
+#   - scripts sourced (mode 0644 — git-sh-setup, git-sh-i18n,
+#     git-mergetool--lib, mergetools/*): não passam pelo kernel exec, dash
+#     ignora a 1ª linha quando carrega via `.`;
+#   - scripts perl/python (source termina em .perl/.py — git-svn,
+#     git-send-email, git-p4, git-archimport, ...): precisam dos
+#     interpreters reais, não dash. No binário shipado esses são stubs
+#     em shell (NO_PERL=1), por isso o extrator reescreve uniformly;
+#     no test tree restauramos os scripts reais para exercer os caminhos
+#     que dependem deles (t91xx, t9001, ...).
+blue "==> Rewriting shell-script shebangs to '#!<git> sh-shim'..."
 SOURCED_NAMES=(git-sh-setup git-sh-i18n git-mergetool--lib)
 is_sourced() {
   local n="$1"
@@ -134,12 +159,23 @@ is_sourced() {
   return 1
 }
 shebanged=0
+skipped_interp=0
 canonical_git="$TREE/bin/git"
 [ -f "$canonical_git" ] || canonical_git="$TREE/bin/git.exe"
 for name in "${!SCRIPT_SRC[@]}"; do
   dst="$TREE/libexec/git-core/$name"
   [ -f "$dst" ] || continue
   is_sourced "$name" && continue
+  # Detecta interpreter pelo shebang real do arquivo de destino (mais robusto
+  # que olhar a extensão do source — `make all` gera git-svn / git-send-email
+  # sem extensão a partir de .perl).
+  first_line=$(head -n 1 "$dst")
+  case "$first_line" in
+    *perl*|*python*|*wish*)
+      skipped_interp=$((skipped_interp + 1))
+      continue
+      ;;
+  esac
   # sed -i no Nix shell pode bater em store paths; usa tmpfile + mv.
   tmp="$dst.shebang-tmp"
   { printf '#!%s sh-shim\n' "$canonical_git"; tail -n +2 "$dst"; } > "$tmp"
@@ -147,7 +183,7 @@ for name in "${!SCRIPT_SRC[@]}"; do
   mv "$tmp" "$dst"
   shebanged=$((shebanged + 1))
 done
-echo "  rewrote $shebanged shebangs -> '#!$canonical_git sh-shim'"
+echo "  rewrote $shebanged shell shebangs; left $skipped_interp perl/python shebangs untouched"
 
 # 3c) Converter symlinks→git em hardlinks (tests checam stat -c%h, e
 # alguns assumem que o nome do helper aponta para o mesmo inode do binário
