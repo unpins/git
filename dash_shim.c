@@ -8,11 +8,21 @@
  *
  * We're handed argv = ["sh-shim", "<script>", ...] by git's run_argv —
  * dropping "sh-shim" by overwriting argv[0] to "dash" gives dash exactly
- * what it expects without a memmove. */
+ * what it expects without a memmove.
+ *
+ * mingw: cmd_sh_shim is dead weight. dash isn't linked in — it ships as
+ * an embedded `dash.exe` blob extracted next to the scripts, and the
+ * shebang rewriter points scripts at `#!/dash.exe`. git's parse_interpreter
+ * (compat/mingw.c) resolves that to a PATH lookup, finds our extracted
+ * dash.exe, and CreateProcess'es it directly. Nothing in the runtime
+ * goes through cmd_sh_shim. Kept as a die() in case it does get called
+ * (manual `git sh-shim` from the CLI, etc.). */
 
 #include "git-compat-util.h"
 #include "embed.h"
-#include "dash.h"
+#ifndef _WIN32
+# include "dash.h"
+#endif
 
 int cmd_sh_shim(int argc, const char **argv, const char *prefix,
                 struct repository *repo)
@@ -30,6 +40,13 @@ int cmd_sh_shim(int argc, const char **argv, const char *prefix,
         return 129;
     }
 
+#ifdef _WIN32
+    (void)argc; (void)argv;
+    fprintf(stderr,
+            "git sh-shim: not implemented on Windows; "
+            "scripts are run via the extracted dash.exe directly.\n");
+    return 1;
+#else
     /* dash's main() accepts char**, not const char**. The argv buffer
      * lives in cmd_main's strvec which already owns mutable strings, so
      * the cast is safe in this codepath. */
@@ -37,4 +54,5 @@ int cmd_sh_shim(int argc, const char **argv, const char *prefix,
     a[0] = (char *)"dash";
 
     return dash_main(argc, a);
+#endif
 }

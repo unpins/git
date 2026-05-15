@@ -1,26 +1,49 @@
 # Build inputs for the embedded shell-script subsystem of unpins/git.
 #
-# Produces three artefacts under $out:
-#   - libdash.a + dash.h   :  static archive of dash's .o files (main →
-#                             dash_main); statically linked into git$X
+# Produces under $out:
+#   - dash.h               :  header declaring the dash entry point. On
+#                             Linux/Darwin: `int dash_main(...)`. On mingw:
+#                             empty (cosmocc dash.exe is invoked via PATH,
+#                             not linked into the binary).
+#   - libdash.a            :  Linux/Darwin only — static archive of dash's
+#                             .o files (main → dash_main), linked into git$X
 #                             and exposed as the `git sh-shim` built-in.
 #   - embed_data.c         :  per-file `static const unsigned char` blobs
 #                             of every shell script + helper + mergetool
-#                             config that ships in libexec/git-core.
+#                             config that ships in libexec/git-core. On
+#                             mingw, the cosmocc-built `dash.exe` is
+#                             appended as one more blob (extracted at
+#                             runtime; shebangs point at it).
 #   - embed_index.c        :  manifest table { name, mode, size, data*,
 #                             deps[], deps_n } indexed by the runtime
 #                             extractor; deps are static `.`-source edges
 #                             (parsed at build time).
 #
 # Consumed from playground/git/flake.nix's multicallOverride.
+#
+# `cosmoccDash` is required on mingw and unused elsewhere. It's a
+# derivation with `bin/dash.exe` (an APE → PE32+ binary produced by
+# `playground/dash`'s cosmocc build). dash can't be cross-mingw-built
+# directly: mingw-w64 has no fork/wait/termios, blocking libedit and
+# dash itself (see docs/platforms/mingw.md). cosmocc's libc implements
+# fork() on Windows via CreateProcessW + page-copy + APC.
 
-{ pkgs }:
+{ pkgs, cosmoccDash ? null }:
 
 let
+  # mkMingw passes the BUILD-HOST pkgs (Linux) rather than the cross set,
+  # so `pkgs.stdenv.hostPlatform.isMinGW` would mis-report. Use the
+  # presence of `cosmoccDash` as the mingw signal — it's only ever set
+  # by the cross-mingw path in flake.nix's mkMingw.
+  isMingw = cosmoccDash != null;
+
   # Use pkgsStatic so the .o files match the rest of git's link line
   # (musl on Linux, libSystem on darwin); host stdenv is what compiles.
   spkgs = pkgs.pkgsStatic;
 
+  # Linux/Darwin: build dash.o files and partial-link into libdash.a.
+  # Not used on mingw — that path ships the cosmocc-built dash.exe as
+  # an embed blob instead.
   dashLib = spkgs.stdenv.mkDerivation {
     pname = "dash-lib";
     version = spkgs.dash.version;
@@ -143,12 +166,18 @@ let
     chmod -R u+w payload
 
     # Build the file list (top-level scripts in declared order, then
-    # mergetools/ alphabetically).
+    # mergetools/ alphabetically; on mingw, the cosmocc dash.exe is
+    # appended last so its index is well-defined for embed.c lookups).
     : > files.list
     ${pkgs.lib.concatMapStringsSep "\n" (n: ''
       echo "${n}" >> files.list
     '') scriptNames}
     ( cd payload && find mergetools -type f | sort ) >> files.list
+    ${pkgs.lib.optionalString isMingw ''
+      cp "${cosmoccDash}/bin/dash.exe" payload/dash.exe
+      chmod u+w payload/dash.exe
+      echo "dash.exe" >> files.list
+    ''}
 
     # Per-file deps: parse `^\s*\.\s+...` lines.
     #   bare:           `. git-sh-setup`
@@ -160,6 +189,11 @@ let
     : > deps.tsv
     while IFS= read -r f; do
       deps=""
+      # dash.exe is a binary blob, not a script; skip dep parsing.
+      if [ "$f" = "dash.exe" ]; then
+        printf '%s\t\n' "$f" >> deps.tsv
+        continue
+      fi
       # static `.` lines
       while IFS= read -r line; do
         # bare-name form, optionally tab-indented
@@ -268,9 +302,20 @@ let
     } > $out/embed_index.c
 
     # Drop in the dash artefacts so the consumer can take them from one
-    # output path.
-    cp ${dashLib}/libdash.a $out/libdash.a
-    cp ${dashLib}/dash.h    $out/dash.h
+    # output path. On mingw there's no libdash.a — dash.exe is shipped as
+    # an embed blob (appended above to files.list) and exec'd by git's
+    # mingw spawn after the shebang rewriter points scripts at it.
+    ${if isMingw then ''
+      cat > $out/dash.h <<'EOF'
+      #ifndef UNPINS_DASH_H
+      #define UNPINS_DASH_H
+      /* mingw: dash.exe ships as an embed blob; no linked entry point. */
+      #endif
+      EOF
+    '' else ''
+      cp ${dashLib}/libdash.a $out/libdash.a
+      cp ${dashLib}/dash.h    $out/dash.h
+    ''}
   '';
 in
 embed

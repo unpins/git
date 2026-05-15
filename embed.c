@@ -45,8 +45,29 @@
 # include <mach-o/dyld.h>
 #endif
 
+#ifdef _WIN32
+# include <windows.h>
+#endif
+
 #ifndef PATH_MAX
 # define PATH_MAX 4096
+#endif
+
+/* Windows mingw has SIGINT/SIGTERM but no SIGHUP; gate that one handler. */
+#ifndef SIGHUP
+# define UNPINS_HAVE_SIGHUP 0
+#else
+# define UNPINS_HAVE_SIGHUP 1
+#endif
+
+/* On mingw the embedded shell is the cosmocc-built `dash.exe`, extracted
+ * into the same libexec/git-core/ as the scripts. Shebangs point at it;
+ * git's parse_interpreter (compat/mingw.c) honors `#!/dash.exe` by
+ * basename and resolves via PATH — GIT_EXEC_PATH is prepended to PATH by
+ * setup_path() so the extracted file is reachable. The leading `/` is
+ * required: parse_interpreter rejects shebangs without a `/` or `\`. */
+#ifdef _WIN32
+# define UNPINS_SHEBANG_LINE "#!/dash.exe\n"
 #endif
 
 /* ----- self-exe resolution ------------------------------------------- */
@@ -60,6 +81,15 @@ static int resolve_self_exe(char *out, size_t cap)
         return -1;
     if (!realpath(buf, out))
         return -1;
+    return 0;
+#elif defined(_WIN32)
+    DWORD n = GetModuleFileNameA(NULL, out, (DWORD)cap);
+    if (n == 0 || n >= cap)
+        return -1;
+    /* Convert backslashes to forward slashes so the path is portable
+     * between cmd, MSYS, and git's internal POSIX-style lookups. */
+    for (DWORD i = 0; i < n; i++)
+        if (out[i] == '\\') out[i] = '/';
     return 0;
 #else
     ssize_t n = readlink("/proc/self/exe", out, cap - 1);
@@ -133,9 +163,80 @@ static void cleanup_signal(int sig)
     /* rmrf is not async-signal-safe; accepted v1 trade-off (alternative
      * is leaving the tmpdir behind for /tmp's reaper to handle). */
     cleanup_tmpdir();
+#ifdef _WIN32
+    /* mingw `signal()` has no SA_RESETHAND analog; just exit with a
+     * conventional signal status (128 + sig) instead of re-raising. */
+    _exit(128 + sig);
+#else
     /* Re-raise after restoring default disposition (SA_RESETHAND) so
      * the process exits with the expected signal status. */
     raise(sig);
+#endif
+}
+
+/* Allocate a fresh tmpdir for our libexec staging. Mirrors mkdtemp's
+ * contract: writes the dir path into `out`, returns 0 on success. On
+ * mingw we roll our own — mkdtemp is missing from the mingw-w64 CRT,
+ * and tmp lives outside /tmp anyway (GetTempPath). */
+static int unpins_mkdtemp(char *out, size_t cap)
+{
+#ifdef _WIN32
+    char base[MAX_PATH];
+    DWORD blen = GetTempPathA(MAX_PATH, base);
+    if (blen == 0 || blen >= MAX_PATH)
+        return -1;
+    /* GetTempPath always returns a trailing separator; strip for
+     * predictability when we append our own. */
+    if (blen > 0 && (base[blen - 1] == '\\' || base[blen - 1] == '/'))
+        base[blen - 1] = '\0';
+    /* Try up to 32 randomized names. Collision is vanishingly rare
+     * after process-id + tick-count mixing. */
+    for (int attempt = 0; attempt < 32; attempt++) {
+        unsigned int r =
+            ((unsigned int)GetCurrentProcessId() << 16) ^
+            (unsigned int)GetTickCount() ^
+            ((unsigned int)attempt * 2654435761u);
+        int n = snprintf(out, cap, "%s\\unpins-git.%08x", base, r);
+        if (n < 0 || (size_t)n >= cap)
+            return -1;
+        if (CreateDirectoryA(out, NULL)) {
+            /* Normalize separators — every other code path in this file
+             * uses '/' and git's spawn paths accept either. */
+            for (char *p = out; *p; p++)
+                if (*p == '\\') *p = '/';
+            return 0;
+        }
+        if (GetLastError() != ERROR_ALREADY_EXISTS)
+            return -1;
+    }
+    return -1;
+#else
+    static const char tmpl[] = "/tmp/unpins-git.XXXXXX";
+    if (cap < sizeof tmpl)
+        return -1;
+    memcpy(out, tmpl, sizeof tmpl);
+    return mkdtemp(out) ? 0 : -1;
+#endif
+}
+
+/* Install cleanup_signal for the signals we care about. SIGHUP isn't on
+ * mingw; sigaction itself is a winpthreads-shaped no-op without RESETHAND
+ * semantics, so signal() suffices for the platforms that have it. */
+static void install_cleanup_handlers(void)
+{
+#ifdef _WIN32
+    signal(SIGINT,  cleanup_signal);
+    signal(SIGTERM, cleanup_signal);
+#else
+    struct sigaction sa = { 0 };
+    sa.sa_handler = cleanup_signal;
+    sa.sa_flags = SA_RESETHAND;
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+# if UNPINS_HAVE_SIGHUP
+    sigaction(SIGHUP,  &sa, NULL);
+# endif
+#endif
 }
 
 /* ----- closure walk --------------------------------------------------- */
@@ -192,9 +293,17 @@ static int extract_one(const char *root,
         e->data[0] == '#' && e->data[1] == '!') {
         const unsigned char *nl = memchr(e->data, '\n', e->size);
         if (nl) {
+#ifdef _WIN32
+            (void)self_exe;
+            if (write(fd, UNPINS_SHEBANG_LINE,
+                      sizeof UNPINS_SHEBANG_LINE - 1) < 0) {
+                close(fd); return -1;
+            }
+#else
             if (dprintf(fd, "#!%s sh-shim\n", self_exe) < 0) {
                 close(fd); return -1;
             }
+#endif
             size_t off = (size_t)(nl + 1 - e->data);
             if (write(fd, nl + 1, e->size - off) < 0) {
                 close(fd); return -1;
@@ -249,19 +358,12 @@ void unpins_prefab_all(void)
     if (getenv("GIT_EXEC_PATH"))
         return;
 
-    char tmp_template[] = "/tmp/unpins-git.XXXXXX";
-    if (!mkdtemp(tmp_template))
+    char tmp_template[PATH_MAX];
+    if (unpins_mkdtemp(tmp_template, sizeof tmp_template) != 0)
         return;
     snprintf(active_tmpdir, sizeof active_tmpdir, "%s", tmp_template);
     atexit(cleanup_tmpdir);
-    {
-        struct sigaction sa = { 0 };
-        sa.sa_handler = cleanup_signal;
-        sa.sa_flags = SA_RESETHAND;
-        sigaction(SIGINT,  &sa, NULL);
-        sigaction(SIGTERM, &sa, NULL);
-        sigaction(SIGHUP,  &sa, NULL);
-    }
+    install_cleanup_handlers();
 
     char self_exe[PATH_MAX];
     if (resolve_self_exe(self_exe, sizeof self_exe) != 0) {
@@ -277,18 +379,34 @@ void unpins_prefab_all(void)
         return;
     }
 
+    /* Compute the original libexec/git-core path next to the running
+     * binary (../libexec/git-core relative to the bin dir). The C
+     * helpers live there; we expose them differently per platform. */
+    char libexec_orig[PATH_MAX];
+    libexec_orig[0] = '\0';
+    {
+        const char *bin_slash = strrchr(self_exe, '/');
+        if (bin_slash) {
+            size_t prefix_len = (size_t)(bin_slash - self_exe);
+            snprintf(libexec_orig, sizeof libexec_orig,
+                     "%.*s/../libexec/git-core",
+                     (int)prefix_len, self_exe);
+        }
+    }
+
+#ifndef _WIN32
     /* Re-export the original libexec/git-core via symlinks so the C
      * helpers (sh-i18n--envsubst, remote-curl, http-backend, …) and the
      * builtin trampolines stay reachable when we point GIT_EXEC_PATH at
      * our tmpdir. The originals live at ../libexec/git-core relative to
-     * the running binary in standard nixpkgs / Autotools layouts. */
-    char libexec_orig[PATH_MAX];
-    const char *bin_slash = strrchr(self_exe, '/');
-    if (bin_slash) {
-        size_t prefix_len = (size_t)(bin_slash - self_exe);
-        snprintf(libexec_orig, sizeof libexec_orig,
-                 "%.*s/../libexec/git-core",
-                 (int)prefix_len, self_exe);
+     * the running binary in standard nixpkgs / Autotools layouts.
+     *
+     * Windows: skip — symlink() needs SeCreateSymbolicLinkPrivilege.
+     * Instead we leave the originals where they are and prepend BOTH
+     * <tmp>/libexec/git-core and the original libexec to PATH below.
+     * git's lookup_prog walks PATH for `git-<foo>`/`git-<foo>.exe`,
+     * so scripts resolve from <tmp> first, C helpers from the original. */
+    if (libexec_orig[0]) {
         DIR *d = opendir(libexec_orig);
         if (d) {
             struct dirent *de;
@@ -320,6 +438,7 @@ void unpins_prefab_all(void)
             closedir(d);
         }
     }
+#endif
 
     /* Extract embed entries, overwriting any pre-staged symlink for the
      * same path. mergetools/* lands in <exec_path>/mergetools/ which
@@ -333,13 +452,33 @@ void unpins_prefab_all(void)
         snprintf(dst, sizeof dst, "%s/%s", exec_path, e->name);
         unlink(dst);
         /* mode 0755 entries are executed via the kernel (shebang
-         * matters); mode 0644 entries are `.`-sourced (shebang ignored). */
+         * matters); mode 0644 entries are `.`-sourced (shebang ignored).
+         * extract_one no-ops the rewrite when the blob's magic isn't
+         * `#!` — that covers dash.exe on Windows (MZ header, mode 0755). */
         int rewrite = (e->mode & 0111) ? 1 : 0;
         if (extract_one(active_tmpdir, e, rewrite, self_exe) != 0) {
             cleanup_tmpdir();
             return;
         }
     }
+
+#ifdef _WIN32
+    /* Prepend <tmp>/libexec/git-core (scripts + dash.exe) and the
+     * original libexec/git-core (C helpers, scalar trampoline) to PATH.
+     * git's parse_interpreter resolves shebang interpreters via
+     * lookup_prog → PATH, and run_command spawning a script also walks
+     * PATH for the script's basename. */
+    {
+        const char *old_path = getenv("PATH");
+        char new_path[16384];
+        snprintf(new_path, sizeof new_path, "%s;%s%s%s",
+                 exec_path,
+                 libexec_orig[0] ? libexec_orig : "",
+                 libexec_orig[0] ? ";" : "",
+                 old_path ? old_path : "");
+        setenv("PATH", new_path, 1);
+    }
+#endif
 
     setenv("GIT_EXEC_PATH", exec_path, 1);
     setenv("UNPINS_GIT_PREFAB", exec_path, 1);
@@ -360,21 +499,13 @@ int unpins_run_embedded(const char **argv, int *out_status)
     const struct embed_entry *root = unpins_find_dashed(argv[0]);
     if (!root) return 0;
 
-    char tmp_template[] = "/tmp/unpins-git.XXXXXX";
-    if (!mkdtemp(tmp_template)) return 0;
+    char tmp_template[PATH_MAX];
+    if (unpins_mkdtemp(tmp_template, sizeof tmp_template) != 0)
+        return 0;
 
-    /* Reuse a static slot for the cleanup handlers. snprintf instead
-     * of memcpy keeps ASAN happy if PATH_MAX disagrees. */
     snprintf(active_tmpdir, sizeof active_tmpdir, "%s", tmp_template);
     atexit(cleanup_tmpdir);
-    {
-        struct sigaction sa = { 0 };
-        sa.sa_handler = cleanup_signal;
-        sa.sa_flags = SA_RESETHAND;
-        sigaction(SIGINT,  &sa, NULL);
-        sigaction(SIGTERM, &sa, NULL);
-        sigaction(SIGHUP,  &sa, NULL);
-    }
+    install_cleanup_handlers();
 
     char self_exe[PATH_MAX];
     if (resolve_self_exe(self_exe, sizeof self_exe) != 0) {

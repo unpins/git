@@ -9,9 +9,16 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     unpins-lib.url = "github:unpins/nix-lib";
+    # cosmocc is only consumed for the Windows-cross dash.exe blob in
+    # mkMingw — Linux/Darwin embed dash via pkgsStatic + partial-link.
+    # Native dash can't be cross-mingw-built (no fork/wait/termios on
+    # mingw; libedit configure fails); cosmocc fills the gap with its
+    # CreateProcessW-backed fork(). See docs/platforms/cosmocc.md.
+    cosmocc.url = "github:unpins/cosmocc";
+    cosmocc.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, unpins-lib }:
+  outputs = { self, nixpkgs, unpins-lib, cosmocc }:
     let
       ulib = unpins-lib.lib;
 
@@ -81,7 +88,7 @@
       # mingw (`docs/platforms/mingw.md` notes dash needs a separate
       # cross-mingw build — task tracked in
       # [[unpins-git-windows-port-in-progress]]).
-      multicallOverride = { withEmbed ? true }: pkgs: gitBase:
+      multicallOverride = { withEmbed ? true, cosmoccDash ? null }: pkgs: gitBase:
         # buildPackages so the coreutils/find tools used in postInstall
         # are build-host binaries, not cross-targets. For native builds
         # buildPackages == pkgs (same drvs) so this costs nothing.
@@ -92,7 +99,15 @@
           # a per-script `. source` dep graph). embed.patch wires it all
           # into git's link line and adds a `git sh-shim` builtin that
           # invokes dash_main on the extracted script.
-          bundle = if withEmbed then import ./bundle.nix { inherit pkgs; } else null;
+          #
+          # On mingw, `cosmoccDash` must be set: bundle.nix appends the
+          # cosmocc-built `dash.exe` to the embed table as an extra blob
+          # (libdash.a is omitted from the link; shebangs point at the
+          # extracted dash.exe, resolved via PATH by git's mingw spawn).
+          bundle =
+            if withEmbed
+            then import ./bundle.nix { inherit pkgs cosmoccDash; }
+            else null;
         in
         gitBase.overrideAttrs (old: {
           pname = (old.pname or "git") + "-multicall";
@@ -124,17 +139,19 @@
             cp ${./multicall.c}     multicall.c
             cp ${./multicall.h}     multicall.h
             chmod u+w multicall.c multicall.h
-          '' + nixpkgs.lib.optionalString withEmbed ''
+          '' + nixpkgs.lib.optionalString withEmbed (''
             cp ${./embed.c}         embed.c
             cp ${./embed.h}         embed.h
             cp ${./dash_shim.c}     dash_shim.c
             cp ${bundle}/embed_data.c  embed_data.c
             cp ${bundle}/embed_index.c embed_index.c
             cp ${bundle}/dash.h        dash.h
-            cp ${bundle}/libdash.a     libdash.a
             chmod u+w embed.c embed.h dash_shim.c \
-                      embed_data.c embed_index.c dash.h libdash.a
-          '';
+                      embed_data.c embed_index.c dash.h
+          '' + nixpkgs.lib.optionalString (cosmoccDash == null) ''
+            cp ${bundle}/libdash.a     libdash.a
+            chmod u+w libdash.a
+          '');
 
           # nixpkgs install copies hardlinks as separate files (different
           # inodes). After multicall the Makefile would normally hardlink
@@ -213,17 +230,65 @@
       # gitMinimal.override so curl avoids the openssl static-link autoconf
       # probe pitfalls (same recipe as `unpins/curl`).
       #
-      # `withEmbed = false`: bundle.nix builds dash for the host platform.
-      # Cross-mingw needs dash built for mingw too; until that exists,
-      # ship the binary without embedded shell scripts. Most git workflows
-      # (clone/commit/push/fetch via C builtins) work without them; the
-      # broken ones are submodule/mergetool/p4/cvs/instaweb — which we
-      # already remove from libexec/git-core in multicallOverride.
+      # Embed comes from two halves on mingw:
+      #   - the shell scripts + mergetools/* are blobbed as on Linux/Darwin
+      #     (xxd → embed_data.c), via bundle.nix.
+      #   - dash itself can't be cross-mingw-built (no fork/wait/termios);
+      #     instead `playground/dash`'s cosmocc build emits dash.exe (an
+      #     APE → PE32+ binary with fork() implemented over CreateProcessW).
+      #     bundle.nix appends it to the embed table; embed.c rewrites
+      #     script shebangs to `#!/dash.exe`, and git's parse_interpreter
+      #     (compat/mingw.c) resolves the basename via PATH at run time.
       # ---------------------------------------------------------------------
       mkMingw =
         let
           pkgs = pkgsFor "x86_64-linux";
           cross = ulib.mingwStaticCross pkgs;
+
+          # cosmocc-built dash → APE binary, then `apelink -V 4` extracts
+          # the Windows-only PE32+ image. Inlined here (rather than a
+          # separate flake input) because the only consumer is mkMingw's
+          # embed blob — same shape as `playground/dash/flake.nix`. The
+          # cosmocc toolchain lives in its own derivation; build is short
+          # enough that decoupling buys nothing.
+          cosmoccTc = cosmocc.packages.x86_64-linux.cosmocc;
+          cosmoccDash = pkgs.stdenvNoCC.mkDerivation rec {
+            pname = "cosmocc-dash";
+            version = "0.5.12";
+            src = pkgs.fetchurl {
+              url = "http://gondor.apana.org.au/~herbert/dash/files/dash-${version}.tar.gz";
+              hash = "sha256-akdKxG6LCzKRbExg32lMggWNMpfYs4W3RQgDDKSo8oo=";
+            };
+            nativeBuildInputs = [ cosmoccTc pkgs.gnumake ];
+            dontPatchELF = true;
+            dontStrip = true;
+            # cosmocc's --host triple disables autotools' run-time probes;
+            # dash's configure only does link probes so this is fine.
+            configureFlags = [ "--host=x86_64-pc-cosmo" "--enable-static" ];
+            configurePhase = ''
+              runHook preConfigure
+              ./configure CC=cosmocc CXX=cosmoc++ AR=cosmoar RANLIB=cosmoranlib \
+                $configureFlags
+              runHook postConfigure
+            '';
+            buildPhase = ''
+              runHook preBuild
+              make -j$NIX_BUILD_CORES
+              runHook postBuild
+            '';
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/bin
+              # -V 4 strips the Linux/macOS/BSD halves of the fat APE so
+              # we ship only the Windows PE — cuts the embedded blob to
+              # ~640 KB vs ~1.1 MB for the full fat binary.
+              apelink \
+                -V ${toString cosmoccTc.passthru.apelinkPlatformBits.windows} \
+                -o $out/bin/dash.exe \
+                src/dash.com.dbg
+              runHook postInstall
+            '';
+          };
 
           # Schannel-based static curl — same shape as unpins/curl.
           curlSchannel = ulib.mingwStaticBinary {
@@ -331,7 +396,7 @@
             '';
           });
         in
-        multicallOverride { withEmbed = false; } pkgs gitMingw;
+        multicallOverride { inherit cosmoccDash; } pkgs gitMingw;
     in
     {
       packages =
