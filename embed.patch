@@ -1,0 +1,53 @@
+--- a/git.c
++++ b/git.c
+@@ -18,6 +18,7 @@
+ #include "trace.h"
+ #include "trace2.h"
+ #include "multicall.h"
++#include "embed.h"
+ 
+ #define RUN_SETUP		(1<<0)
+ #define RUN_SETUP_GENTLY	(1<<1)
+@@ -646,6 +647,7 @@
+ 	{ "revert", cmd_revert, RUN_SETUP | NEED_WORK_TREE },
+ 	{ "rm", cmd_rm, RUN_SETUP },
+ 	{ "send-pack", cmd_send_pack, RUN_SETUP },
++	{ "sh-shim", cmd_sh_shim, NO_PARSEOPT },
+ 	{ "shortlog", cmd_shortlog, RUN_SETUP_GENTLY | USE_PAGER },
+ 	{ "show", cmd_show, RUN_SETUP },
+ 	{ "show-branch", cmd_show_branch, RUN_SETUP },
+@@ -788,6 +790,12 @@
+ 	struct child_process cmd = CHILD_PROCESS_INIT;
+ 	int status;
+ 
++	if (unpins_run_embedded(argv, &status)) {
++		if (status >= 0)
++			exit(status);
++		exit(128);
++	}
++
+ 	if (use_pager == -1 && !is_builtin(argv[0]))
+ 		use_pager = check_pager_config(the_repository, argv[0]);
+ 	commit_pager_choice();
+--- a/Makefile
++++ b/Makefile
+@@ -2564,9 +2564,9 @@
+ $(unpins_mc_programs): git$X
+ 	$(QUIET_LNCP)$(RM) $@ && ln $< $@ 2>/dev/null || ln -s $< $@ 2>/dev/null || cp $< $@
+ 
+-git$X: git.o GIT-LDFLAGS $(BUILTIN_OBJS) $(GITLIBS) $(unpins_mc_objs)
++git$X: git.o GIT-LDFLAGS $(BUILTIN_OBJS) $(GITLIBS) $(unpins_mc_objs) embed.o embed_data.o embed_index.o dash_shim.o libdash.a
+ 	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) \
+-		$(filter %.o,$^) $(LIBS)
++		$(filter %.o,$^) libdash.a $(LIBS)
+ 
+ help.sp help.s help.o: command-list.h
+ builtin/bugreport.sp builtin/bugreport.s builtin/bugreport.o: hook-list.h
+@@ -2780,6 +2780,7 @@
+ GIT_OBJS += $(BUILTIN_OBJS)
+ GIT_OBJS += common-main.o
+ GIT_OBJS += git.o
++GIT_OBJS += embed.o embed_data.o embed_index.o dash_shim.o
+ .PHONY: git-objs
+ git-objs: $(GIT_OBJS)
+ 

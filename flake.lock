@@ -2,11 +2,11 @@
   "nodes": {
     "nixpkgs": {
       "locked": {
-        "lastModified": 1778003029,
-        "narHash": "sha256-q/nkKLDtHIyLjZpKhWk3cSK5IYsFqtMd6UtXF3ddjgA=",
+        "lastModified": 1778430510,
+        "narHash": "sha256-Ti+ZBvW6yrWWAg2szExVTwCd4qOJ3KlVr1tFHfyfi8Q=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "0c88e1f2bdb93d5999019e99cb0e61e1fe2af4c5",
+        "rev": "8fd9daa3db09ced9700431c5b7ad0e8ba199b575",
         "type": "github"
       },
       "original": {
@@ -43,12 +43,10 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1778676840,
-        "narHash": "sha256-QOMCApgaOgiZJMdxIrW+E9k1b/NVOTEebFkJ5Omey/M=",
-        "owner": "unpins",
-        "repo": "nix-lib",
-        "rev": "27d5e7cad41bd6a0eafa28a5b40788f51bb00fce",
-        "type": "github"
+        "lastModified": 1778783723,
+        "narHash": "sha256-jm8lk0tr/whw8hKBQCkt0QcNfNn5e136l8DqxGMudDc=",
+        "path": "/home/malbarbo/projetos/unpins/nix-lib",
+        "type": "path"
       },
       "original": {
         "owner": "unpins",

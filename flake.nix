@@ -48,11 +48,19 @@
         # buildPackages so the coreutils/find tools used in postInstall
         # are build-host binaries, not cross-targets. For native builds
         # buildPackages == pkgs (same drvs) so this costs nothing.
-        let bp = pkgs.buildPackages; in
+        let
+          bp = pkgs.buildPackages;
+          # bundle.nix builds dash → libdash.a + the embed_*.c tables
+          # (one xxd-style blob per shipped libexec/git-core script with
+          # a per-script `. source` dep graph). embed.patch wires it all
+          # into git's link line and adds a `git sh-shim` builtin that
+          # invokes dash_main on the extracted script.
+          bundle = import ./bundle.nix { inherit pkgs; };
+        in
         gitBase.overrideAttrs (old: {
           pname = (old.pname or "git") + "-multicall";
 
-          patches = (old.patches or [ ]) ++ [ ./multicall.patch ];
+          patches = (old.patches or [ ]) ++ [ ./multicall.patch ./embed.patch ];
 
           configureFlags = (old.configureFlags or [ ]) ++ [
             # Force-enable curl detection. autoconf's AC_CHECK_LIB tries to
@@ -78,10 +86,20 @@
 
           # multicall.patch adds `#include "multicall.h"` to git.c; the
           # corresponding source files have to exist by the time we compile.
+          # embed.patch additionally references embed.h + dash.h and
+          # links libdash.a + the four generated objects.
           postPatch = (old.postPatch or "") + ''
-            cp ${./multicall.c} multicall.c
-            cp ${./multicall.h} multicall.h
-            chmod u+w multicall.c multicall.h
+            cp ${./multicall.c}     multicall.c
+            cp ${./multicall.h}     multicall.h
+            cp ${./embed.c}         embed.c
+            cp ${./embed.h}         embed.h
+            cp ${./dash_shim.c}     dash_shim.c
+            cp ${bundle}/embed_data.c  embed_data.c
+            cp ${bundle}/embed_index.c embed_index.c
+            cp ${bundle}/dash.h        dash.h
+            cp ${bundle}/libdash.a     libdash.a
+            chmod u+w multicall.c multicall.h embed.c embed.h dash_shim.c \
+                      embed_data.c embed_index.c dash.h libdash.a
           '';
 
           # nixpkgs install copies hardlinks as separate files (different
@@ -121,6 +139,24 @@
             done < <(${bp.findutils}/bin/find "$out" -type f -size "''${canonical_size}c")
 
             echo "Multicall dedup: replaced $replaced files (-> $canonical)"
+
+            # Embedded-script vestige cleanup: every script we ship
+            # inside the binary becomes dead weight in libexec/git-core
+            # (worse: the install-time shebangs point at a Nix store
+            # bash that doesn't exist on the target). Remove them so
+            # GIT_EXEC_PATH lookups fall through to our extract dir
+            # only. The C-helper symlinks (git-daemon, etc.) stay —
+            # they're routed by multicall, unrelated to embed.
+            for n in git-archimport git-citool git-cvsexportcommit \
+                     git-cvsimport git-cvsserver git-difftool--helper \
+                     git-filter-branch git-gui--askpass git-instaweb \
+                     git-merge-octopus git-merge-one-file git-merge-resolve \
+                     git-mergetool git-mergetool--lib git-p4 \
+                     git-quiltimport git-request-pull git-sh-i18n \
+                     git-sh-setup git-submodule git-subtree git-web--browse; do
+              ${bp.coreutils}/bin/rm -f "$out/libexec/git-core/$n"
+            done
+            ${bp.coreutils}/bin/rm -rf "$out/libexec/git-core/mergetools"
           '';
         });
 
