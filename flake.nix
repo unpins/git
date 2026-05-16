@@ -9,16 +9,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     unpins-lib.url = "github:unpins/nix-lib";
-    # cosmocc is only consumed for the Windows-cross dash.exe blob in
-    # mkMingw — Linux/Darwin embed dash via pkgsStatic + partial-link.
-    # Native dash can't be cross-mingw-built (no fork/wait/termios on
-    # mingw; libedit configure fails); cosmocc fills the gap with its
-    # CreateProcessW-backed fork(). See docs/platforms/cosmocc.md.
-    cosmocc.url = "github:unpins/cosmocc";
-    cosmocc.inputs.nixpkgs.follows = "nixpkgs";
+    unpins-lib.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, unpins-lib, cosmocc }:
+  outputs = { self, nixpkgs, unpins-lib }:
     let
       ulib = unpins-lib.lib;
 
@@ -249,9 +243,10 @@
           # the Windows-only PE32+ image. Inlined here (rather than a
           # separate flake input) because the only consumer is mkMingw's
           # embed blob — same shape as `playground/dash/flake.nix`. The
-          # cosmocc toolchain lives in its own derivation; build is short
-          # enough that decoupling buys nothing.
-          cosmoccTc = cosmocc.packages.x86_64-linux.cosmocc;
+          # cosmocc toolchain comes from unpins-lib (which wraps cosmocc.zip
+          # + cc-wrapper around it); build is short enough that decoupling
+          # into a separate input buys nothing.
+          cosmoccTc = (ulib.cosmoStdenv pkgs).cosmocc;
           cosmoccDash = pkgs.stdenvNoCC.mkDerivation rec {
             pname = "cosmocc-dash";
             version = "0.5.12";
