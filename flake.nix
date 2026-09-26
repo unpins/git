@@ -6,15 +6,14 @@
     extra-trusted-public-keys = [ "unpins.cachix.org-1:DDaShjbZ8VvcqxeTcAU3kV9vxZQBlyb7V/uLBHfTynI=" ];
   };
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    unpins-lib.url = "github:unpins/nix-lib";
-    unpins-lib.inputs.nixpkgs.follows = "nixpkgs";
-  };
+  inputs.unpins-lib.url = "github:unpins/nix-lib";
 
-  outputs = { self, nixpkgs, unpins-lib }:
+  outputs = { self, unpins-lib }:
     let
       ulib = unpins-lib.lib;
+      # nix-lib's own pin: a private nixpkgs here would keep this package off
+      # the channel the rest of the catalog is built and security-bumped on.
+      nixpkgs = unpins-lib.inputs.nixpkgs;
 
       pkgsFor = system: import nixpkgs { inherit system; };
 
