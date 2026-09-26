@@ -148,9 +148,26 @@ let
     "git-web--browse"
   ];
 
+  # The scripts are harvested from a plain pkgsStatic.gitMinimal, which runs
+  # git's own suite. Two of t3434's six cases compare ISO-2022-JP bytes against
+  # GNU libiconv's output: musl's iconv re-designates the charset before every
+  # character instead of once per run, so the bytes differ (both decode to the
+  # same text) and the comparison fails. nixpkgs already skips t3900-i18n-commit
+  # and t0028-working-tree-encoding on musl for this class; t3434 is not on that
+  # list yet. Skip the two cases by name and keep the other 28876 tests gating.
+  gitScripts = spkgs.gitMinimal.overrideAttrs (old: {
+    # Exported here rather than as a derivation attr: nixpkgs' git builds with
+    # structured attrs, so an attr of this name never reaches the test scripts.
+    # `t3434`, not the full name — test-lib cuts it at the first dash; the two
+    # numbers are positional, so a case added above them would move the skip.
+    preInstallCheck = (old.preInstallCheck or "") + ''
+      export GIT_SKIP_TESTS="t3434.3 t3434.6"
+    '';
+  });
+
   embed = pkgs.runCommand "git-embed-bundle" {
     nativeBuildInputs = [ pkgs.coreutils pkgs.findutils pkgs.gnused pkgs.xxd ];
-    src = "${spkgs.gitMinimal}/libexec/git-core";
+    src = "${gitScripts}/libexec/git-core";
   } ''
     set -eu
     mkdir -p $out
