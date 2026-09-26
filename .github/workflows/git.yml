@@ -13,19 +13,12 @@ jobs:
   build:
     permissions:
       contents: write
-    uses: unpins/action-build/.github/workflows/build.yml@v1
+    uses: unpins/action-build/.github/workflows/build.yml@main
     with:
+      # This flake is hand-rolled, not mkStandaloneFlake, so it exposes no
+      # `manifest` attr for build.yml to read the name from.
       package_name: 'git'
+      # git needs its own share/ at runtime (templates, git-core), so the data
+      # tarball is a real asset here, unlike the packages the engine wraps.
       package_data: true
-      # Native targets only. Windows cross-mingw is blocked by upstream
-      # nixpkgs breakage (gawk/bash/libev all fail in pkgsCross.mingwW64);
-      # see flake.nix and unpins memory `feedback_unpins_git_windows_blocked`.
-      platforms: |
-        [
-          {"runner":"ubuntu-latest",    "os":"linux",   "arch":"x86_64"},
-          {"runner":"ubuntu-24.04-arm", "os":"linux",   "arch":"aarch64"},
-          {"runner":"macos-13",         "os":"darwin",  "arch":"x86_64"},
-          {"runner":"macos-14",         "os":"darwin",  "arch":"aarch64"}
-        ]
-    secrets:
-      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    secrets: inherit
