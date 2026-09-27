@@ -43,7 +43,17 @@
       # ---------------------------------------------------------------------
       runtimeOverride = hostPkgs: gitBase:
         let
-          busybox = hostPkgs.callPackage ./busybox { };
+          # darwin renames busybox's symbols with llvm-objcopy, which needs
+          # machine code: the engine's own no-LTO door there, the one x264
+          # takes. Elsewhere lld -r lowers the bitcode itself.
+          sys = hostPkgs.stdenv.buildPlatform.system;
+          noLto = ulib.engineStdenv {
+            pkgs = unpins-lib.inputs.nixpkgs.legacyPackages.${sys};
+            toolchain = ulib.unpinToolchain sys;
+            lto = false;
+          };
+          busybox = hostPkgs.callPackage ./busybox
+            (if hostPkgs.stdenv.hostPlatform.isDarwin then { stdenv = noLto; } else { });
         in
         gitBase.overrideAttrs (old: {
           pname = (old.pname or "git") + "-multicall";
