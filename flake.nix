@@ -46,10 +46,14 @@
           # darwin renames busybox's symbols with llvm-objcopy, which needs
           # machine code: the engine's own no-LTO door there, the one x264
           # takes. Elsewhere lld -r lowers the bitcode itself.
-          sys = hostPkgs.stdenv.buildPlatform.system;
+          # Base set as nix-lib builds it: pkgsCross when the host differs
+          # (darwin-x86_64 is built on arm64).
+          buildSys = hostPkgs.stdenv.buildPlatform.system;
+          hostSys = hostPkgs.stdenv.hostPlatform.system;
+          buildBase = unpins-lib.inputs.nixpkgs.legacyPackages.${buildSys};
           noLto = ulib.engineStdenv {
-            pkgs = unpins-lib.inputs.nixpkgs.legacyPackages.${sys};
-            toolchain = ulib.unpinToolchain sys;
+            pkgs = if buildSys == hostSys then buildBase else buildBase.pkgsCross.${hostSys};
+            toolchain = ulib.unpinToolchain buildSys;
             lto = false;
           };
           busybox = hostPkgs.callPackage ./busybox
