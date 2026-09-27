@@ -22,7 +22,9 @@ let
     "RMDIR" "SED" "SEQ" "SLEEP" "SORT" "TAIL" "TEE" "TEST" "TEST1" "TEST2"
     "TOUCH" "TR" "TRUE" "UNAME" "UNIQ" "WC" "XARGS" "YES"
   ];
-  features = [ "FEATURE_PREFER_APPLETS" "FEATURE_SH_STANDALONE" ];
+  features = [ "FEATURE_PREFER_APPLETS" "FEATURE_SH_STANDALONE" ]
+    ++ lib.optionals isMingw [ "UNICODE_SUPPORT" "FEATURE_UTF8_MANIFEST"
+                               "FEATURE_UTF8_INPUT" "FEATURE_UTF8_OUTPUT" ];
   # darwin has no sendfile/utmp and the x86 SHA assembly is ELF-only.
   darwinOff = [ "FEATURE_USE_SENDFILE" "SHA1_HWACCEL" "SHA256_HWACCEL"
                 "FEATURE_UTMP" "FEATURE_WTMP" ];
@@ -96,7 +98,11 @@ stdenv.mkDerivation {
   configurePhase = ''
     runHook preConfigure
     bbMakeFlags="HOSTCC=cc CC=$CC AR=$AR NM=$NM STRIP=$STRIP OBJCOPY=$OBJCOPY"
-    make $bbMakeFlags ${if isMingw then "mingw64_defconfig" else "defconfig"} >/dev/null
+    # mingw64u: upstream's Unicode build, for git.exe's UTF-8 manifest. Not
+    # its refusal to start where that manifest is ignored (pre-1903; the
+    # shell keeps working in the ANSI code page there), nor its CNG hashing
+    # (-lbcrypt for applets git doesn't carry).
+    make $bbMakeFlags ${if isMingw then "mingw64u_defconfig" else "defconfig"} >/dev/null
 
     keep=" ${lib.concatStringsSep " " applets} "
     for a in $(grep -rhoE '//applet:IF_[A-Z0-9_]+' --include='*.c' . \
@@ -108,7 +114,7 @@ stdenv.mkDerivation {
     for f in ${lib.concatStringsSep " " (applets ++ features)}; do
       sed -i "s/^# CONFIG_$f is not set/CONFIG_$f=y/" .config
     done
-    for f in BUSYBOX ${lib.optionalString isDarwin (lib.concatStringsSep " " darwinOff)}; do
+    for f in BUSYBOX ${lib.optionalString isMingw "FEATURE_FAIL_IF_UTF8_MANIFEST_UNSUPPORTED FEATURE_USE_CNG_API"} ${lib.optionalString isDarwin (lib.concatStringsSep " " darwinOff)}; do
       sed -i "s/^CONFIG_$f=y/# CONFIG_$f is not set/" .config
     done
     { yes "" || true; } | make $bbMakeFlags oldconfig >/dev/null

@@ -60,6 +60,10 @@ The [Releases](https://github.com/unpins/git/releases) page has standalone binar
   `awk` and friends, on every platform. Hooks keep their `#!` line: on Linux and
   macOS a `#!/bin/sh` hook runs with the system's `/bin/sh`; on Windows, where
   there is none, with the built-in one.
+- **Any file name on Windows.** `git.exe` runs with UTF-8 as its code page, so
+  the shell and its tools handle names in any script, not only those of the
+  system's language. This needs Windows 10 version 1903 or later; on older
+  versions they are limited to the system's code page.
 - **`git --exec-path` names a directory inside the binary.** Git and its own
   scripts use it as usual, but a shell outside Git cannot read from it:
   `. "$(git --exec-path)/git-sh-setup"` in your own script does not work.

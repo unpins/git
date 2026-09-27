@@ -237,6 +237,11 @@
               # Hooks are `#!/bin/sh` scripts; with no sh on PATH, run them
               # with the ash linked into git.exe.
               ./mingw-unpins-sh.patch
+              # git's manifest, actually embedded (git.rc names its type by
+              # a macro windres doesn't have), with UTF-8 as the process code
+              # page (Windows 10 1903+): the linked-in busybox takes argv,
+              # environ, paths and child command lines through the ANSI APIs.
+              ./mingw-utf8-manifest.patch
             ];
 
             # Avoid libssp-0.dll (no static stack-protector runtime in

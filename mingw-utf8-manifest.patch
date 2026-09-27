@@ -1,0 +1,23 @@
+--- a/git.rc.in
++++ b/git.rc.in
+@@ -21,4 +21,5 @@
+   END
+ END
+ 
+-1 RT_MANIFEST "compat/win32/git.manifest"
++/* RT_MANIFEST: windres has no such name without <winuser.h> */
++1 24 "compat/win32/git.manifest"
+--- a/compat/win32/git.manifest
++++ b/compat/win32/git.manifest
+@@ -1,6 +1,11 @@
+ <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+ <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+ 	<assemblyIdentity type="win32" name="Git" version="0.0.0.1" />
++	<application xmlns="urn:schemas-microsoft-com:asm.v3">
++		<windowsSettings>
++			<activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
++		</windowsSettings>
++	</application>
+ 	<trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+ 		<security>
+ 			<requestedPrivileges>
