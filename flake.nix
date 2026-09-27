@@ -352,8 +352,14 @@
 
       # nixpkgs turns the manual off for LLVM stdenvs; its tools (asciidoc,
       # xmlto) are build-host ones and work the same here.
+      # bash/gawk/sed/grep/coreutils only rewrite paths in the installed
+      # scripts, which don't ship (the ZIP takes them from the build tree):
+      # the build host's, as for Windows, not five static builds.
       build = pkgs: runtimeOverride pkgs.pkgsStatic
-        (pkgs.pkgsStatic.gitMinimal.override { withManual = true; });
+        (pkgs.pkgsStatic.gitMinimal.override {
+          withManual = true;
+          inherit (pkgs.buildPackages) bash gawk gnused gnugrep coreutils;
+        });
       windowsBuild = mkMingw;
 
       runtimeEmbed = {
