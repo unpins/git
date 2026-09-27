@@ -89,7 +89,10 @@
           doCheck = false;
           doInstallCheck = false;
 
-          postPatch = (old.postPatch or "") + ''
+          postPatch = (old.postPatch or "") + hostPkgs.lib.optionalString hostPkgs.stdenv.hostPlatform.isDarwin ''
+            # static libcurl's proxy lookup (SCDynamicStoreCopyProxies)
+            echo 'EXTLIBS += -framework SystemConfiguration' >> config.mak
+          '' + ''
             cp ${./multicall.c} multicall.c
             cp ${./multicall.h} multicall.h
             cp ${./unpins_git.c} unpins_git.c
@@ -330,7 +333,7 @@
 
       # libpsl's .dat path is dead (curl's note says why); git's PREFIX only
       # feeds --man-path/--html-path, which name nothing on the target (the
-      # native build carries the manual, windows is gitMinimal as is).
+      # manual is embedded instead).
       removeReferences = [ "publicsuffix-list" "git-multicall" ];
 
       smoke = [ "--version" ];
@@ -343,6 +346,9 @@
         aliases = [ "git-receive-pack" "git-upload-pack" "git-upload-archive"
                     "git-shell" "git-http-backend" "scalar" ];
       }];
+      # darwin: the fold relinks from captured inputs, which keep no
+      # -framework. git's own CoreServices, and curl's proxy lookup.
+      multicall.requires.frameworks = [ "CoreFoundation" "CoreServices" "SystemConfiguration" ];
 
       # nixpkgs turns the manual off for LLVM stdenvs; its tools (asciidoc,
       # xmlto) are build-host ones and work the same here.
