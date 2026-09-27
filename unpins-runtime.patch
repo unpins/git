@@ -1,4 +1,51 @@
-Somente em b/builtin: .depend
+--- a/Makefile
++++ b/Makefile
+@@ -2689,6 +2689,28 @@ endif
+ 
+ OBJECTS += multicall.o
+ 
++# === unpins runtime: scripts/templates from the embedded ZIP, busybox linked in ===
++unpins_root := /__unpins_git__/
++unpins_miniz_defs := -DMINIZ_USE_ZSTD -DMINIZ_NO_TIME -DMINIZ_NO_ARCHIVE_WRITING_APIS \
++	-DMINIZ_NO_ZLIB_APIS -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES
++ifeq ($(uname_S),MINGW)
++unpins_vfs_defs := -DUNPIN_VFS_WIN_MARKER='"__unpins_git__"'
++else
++unpins_vfs_defs := -DUNPIN_VFS_NOWRAP
++endif
++vfs.o:        EXTRA_CPPFLAGS = -DUNPIN_VFS_SELF -DUNPIN_VFS_ROOT='"$(unpins_root)"' $(unpins_vfs_defs) $(unpins_miniz_defs)
++miniz.o:      EXTRA_CPPFLAGS = -w $(unpins_miniz_defs)
++unpin_zstd.o: EXTRA_CPPFLAGS = -w $(unpins_miniz_defs) -DUNPIN_ZSTD_VENDORED
++# In libgit.a: common-main.o and run-command.o call into it from every program.
++LIB_OBJS += unpins_git.o vfs.o miniz.o unpin_zstd.o
++# darwin: an archive of renamed objects instead (ld64.lld has no -r); Mach-O
++# linkers search archives in any order.
++ifneq ($(wildcard busybox.a),)
++GITLIBS += busybox.a
++else
++$(LIB_FILE): busybox.o
++endif
++
+ $(unpins_mc_programs): git$X
+ 	$(QUIET_LNCP)$(RM) $@ && ln $< $@ 2>/dev/null || ln -s $< $@ 2>/dev/null || cp $< $@
+ 
+@@ -2975,14 +2997,14 @@ endif
+ 
+ exec-cmd.sp exec-cmd.s exec-cmd.o: GIT-PREFIX
+ exec-cmd.sp exec-cmd.s exec-cmd.o: EXTRA_CPPFLAGS = \
+-	'-DGIT_EXEC_PATH="$(gitexecdir_SQ)"' \
++	'-DGIT_EXEC_PATH="$(unpins_root)libexec/git-core"' \
+ 	'-DGIT_LOCALE_PATH="$(localedir_relative_SQ)"' \
+ 	'-DBINDIR="$(bindir_relative_SQ)"' \
+ 	'-DFALLBACK_RUNTIME_PREFIX="$(prefix_SQ)"'
+ 
+ setup.sp setup.s setup.o: GIT-PREFIX
+ setup.sp setup.s setup.o: EXTRA_CPPFLAGS = \
+-	-DDEFAULT_GIT_TEMPLATE_DIR='"$(template_dir_SQ)"'
++	-DDEFAULT_GIT_TEMPLATE_DIR='"$(unpins_root)templates"'
+ 
+ config.sp config.s config.o: GIT-PREFIX
+ config.sp config.s config.o: EXTRA_CPPFLAGS = \
 --- a/builtin/gc.c
 +++ b/builtin/gc.c
 @@ -14,6 +14,7 @@
@@ -9,7 +56,7 @@ Somente em b/builtin: .depend
  #include "abspath.h"
  #include "date.h"
  #include "dir.h"
-@@ -2493,7 +2494,7 @@
+@@ -2493,7 +2494,7 @@ static int launchctl_schedule_plist(const char *exec_path, enum schedule_priorit
  		   "<key>Label</key><string>%s</string>\n"
  		   "<key>ProgramArguments</key>\n"
  		   "<array>\n"
@@ -18,7 +65,7 @@ Somente em b/builtin: .depend
  		   "<string>--exec-path=%s</string>\n"
  		   "%s" /* For extra config parameters. */
  		   "<string>for-each-repo</string>\n"
-@@ -2505,7 +2506,7 @@
+@@ -2505,7 +2506,7 @@ static int launchctl_schedule_plist(const char *exec_path, enum schedule_priorit
  		   "</array>\n"
  		   "<key>StartCalendarInterval</key>\n"
  		   "<array>\n";
@@ -27,7 +74,7 @@ Somente em b/builtin: .depend
  		    get_extra_launchctl_strings(), frequency);
  
  	switch (schedule) {
-@@ -2741,12 +2742,12 @@
+@@ -2741,12 +2742,12 @@ static int schtasks_schedule_task(const char *exec_path, enum schedule_priority
  	      "</Settings>\n"
  	      "<Actions Context=\"Author\">\n"
  	      "<Exec>\n"
@@ -42,7 +89,7 @@ Somente em b/builtin: .depend
  		get_extra_config_parameters(), frequency);
  	strvec_split(&child.args, cmd);
  	strvec_pushl(&child.args, "/create", "/tn", name, "/f", "/xml",
-@@ -2898,8 +2899,8 @@
+@@ -2898,8 +2899,8 @@ static int crontab_update_schedule(int run_maintenance, int fd)
  			"# replaced in the future by a Git command.\n\n");
  
  		strbuf_addf(&line_format,
@@ -53,7 +100,7 @@ Somente em b/builtin: .depend
  		fprintf(cron_in, line_format.buf, minute, "1-23", "*", "hourly");
  		fprintf(cron_in, line_format.buf, minute, "0", "1-6", "daily");
  		fprintf(cron_in, line_format.buf, minute, "0", "0", "weekly");
-@@ -3100,7 +3101,7 @@
+@@ -3100,7 +3101,7 @@ static int systemd_timer_write_service_template(const char *exec_path)
  	       "\n"
  	       "[Service]\n"
  	       "Type=oneshot\n"
@@ -62,7 +109,7 @@ Somente em b/builtin: .depend
  	       "LockPersonality=yes\n"
  	       "MemoryDenyWriteExecute=yes\n"
  	       "NoNewPrivileges=yes\n"
-@@ -3110,7 +3111,7 @@
+@@ -3110,7 +3111,7 @@ static int systemd_timer_write_service_template(const char *exec_path)
  	       "RestrictSUIDSGID=yes\n"
  	       "SystemCallArchitectures=native\n"
  	       "SystemCallFilter=@system-service\n";
@@ -71,7 +118,6 @@ Somente em b/builtin: .depend
  		error(_("failed to write to '%s'"), filename);
  		fclose(file);
  		goto error;
-Somente em b: command-list.h
 --- a/common-main.c
 +++ b/common-main.c
 @@ -1,10 +1,14 @@
@@ -89,17 +135,9 @@ Somente em b: command-list.h
  	init_git(argv);
  	result = cmd_main(argc, argv);
  
-Somente em b: common-main.o
-Somente em b/compat: .depend
-Somente em b/compat/linux: .depend
-Somente em b/compat/simple-ipc: .depend
-Somente em b/compiler-tricks: .depend
-Somente em b: .depend
-Somente em b/ewah: .depend
-Somente em b: exec-cmd.o
 --- a/git.c
 +++ b/git.c
-@@ -932,6 +932,15 @@
+@@ -932,6 +932,15 @@ int cmd_main(int argc, const char **argv)
  
  	trace_command_performance(argv);
  
@@ -115,10 +153,6 @@ Somente em b: exec-cmd.o
  	/*
  	 * "git-xxxx" is the same as "git xxxx", but we obviously:
  	 *
-Somente em b: GIT-CFLAGS
-Somente em b: git.o
-Somente em b: GIT-PREFIX
-Somente em b: GIT-VERSION-FILE
 --- a/help.c
 +++ b/help.c
 @@ -11,6 +11,7 @@
@@ -129,7 +163,7 @@ Somente em b: GIT-VERSION-FILE
  #include "command-list.h"
  #include "string-list.h"
  #include "column.h"
-@@ -250,15 +251,27 @@
+@@ -250,15 +251,27 @@ static void list_commands_in_dir(struct cmdnames *cmds,
  					 const char *path,
  					 const char *prefix)
  {
@@ -160,65 +194,6 @@ Somente em b: GIT-VERSION-FILE
  
  	strbuf_addf(&buf, "%s/", path);
  	len = buf.len;
-Somente em b: help.o
---- a/Makefile
-+++ b/Makefile
-@@ -2689,6 +2689,28 @@
- 
- OBJECTS += multicall.o
- 
-+# === unpins runtime: scripts/templates from the embedded ZIP, busybox linked in ===
-+unpins_root := /__unpins_git__/
-+unpins_miniz_defs := -DMINIZ_USE_ZSTD -DMINIZ_NO_TIME -DMINIZ_NO_ARCHIVE_WRITING_APIS \
-+	-DMINIZ_NO_ZLIB_APIS -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES
-+ifeq ($(uname_S),MINGW)
-+unpins_vfs_defs := -DUNPIN_VFS_WIN_MARKER='"__unpins_git__"'
-+else
-+unpins_vfs_defs := -DUNPIN_VFS_NOWRAP
-+endif
-+vfs.o:        EXTRA_CPPFLAGS = -DUNPIN_VFS_SELF -DUNPIN_VFS_ROOT='"$(unpins_root)"' $(unpins_vfs_defs) $(unpins_miniz_defs)
-+miniz.o:      EXTRA_CPPFLAGS = -w $(unpins_miniz_defs)
-+unpin_zstd.o: EXTRA_CPPFLAGS = -w $(unpins_miniz_defs) -DUNPIN_ZSTD_VENDORED
-+# In libgit.a: common-main.o and run-command.o call into it from every program.
-+LIB_OBJS += unpins_git.o vfs.o miniz.o unpin_zstd.o
-+# darwin: an archive of renamed objects instead (ld64.lld has no -r); Mach-O
-+# linkers search archives in any order.
-+ifneq ($(wildcard busybox.a),)
-+GITLIBS += busybox.a
-+else
-+$(LIB_FILE): busybox.o
-+endif
-+
- $(unpins_mc_programs): git$X
- 	$(QUIET_LNCP)$(RM) $@ && ln $< $@ 2>/dev/null || ln -s $< $@ 2>/dev/null || cp $< $@
- 
-@@ -2975,14 +2997,14 @@
- 
- exec-cmd.sp exec-cmd.s exec-cmd.o: GIT-PREFIX
- exec-cmd.sp exec-cmd.s exec-cmd.o: EXTRA_CPPFLAGS = \
--	'-DGIT_EXEC_PATH="$(gitexecdir_SQ)"' \
-+	'-DGIT_EXEC_PATH="$(unpins_root)libexec/git-core"' \
- 	'-DGIT_LOCALE_PATH="$(localedir_relative_SQ)"' \
- 	'-DBINDIR="$(bindir_relative_SQ)"' \
- 	'-DFALLBACK_RUNTIME_PREFIX="$(prefix_SQ)"'
- 
- setup.sp setup.s setup.o: GIT-PREFIX
- setup.sp setup.s setup.o: EXTRA_CPPFLAGS = \
--	-DDEFAULT_GIT_TEMPLATE_DIR='"$(template_dir_SQ)"'
-+	-DDEFAULT_GIT_TEMPLATE_DIR='"$(unpins_root)templates"'
- 
- config.sp config.s config.o: GIT-PREFIX
- config.sp config.s config.o: EXTRA_CPPFLAGS = \
-Somente em b: miniz.c
-Somente em b: miniz.h
-Somente em b: miniz.o
-Somente em b: multicall.c
-Somente em b: multicall.h
-Somente em b/negotiator: .depend
-Somente em b/odb: .depend
-Somente em b/oss-fuzz: .depend
-Somente em b/refs: .depend
-Somente em b/reftable: .depend
 --- a/run-command.c
 +++ b/run-command.c
 @@ -2,6 +2,7 @@
@@ -229,7 +204,7 @@ Somente em b/reftable: .depend
  #include "environment.h"
  #include "exec-cmd.h"
  #include "gettext.h"
-@@ -738,6 +739,8 @@
+@@ -738,6 +739,8 @@ int start_command(struct child_process *cmd)
  
  	trace2_child_start(cmd);
  	trace_run_command(cmd);
@@ -238,7 +213,6 @@ Somente em b/reftable: .depend
  
  	fflush(NULL);
  
-Somente em b: run-command.o
 --- a/setup.c
 +++ b/setup.c
 @@ -24,6 +24,7 @@
@@ -249,7 +223,7 @@ Somente em b: run-command.o
  #include "worktree.h"
  
  static int inside_git_dir = -1;
-@@ -2319,6 +2320,8 @@
+@@ -2319,6 +2320,8 @@ static void copy_templates(const char *option_template)
  
  	if (!template_dir || !*template_dir)
  		return;
@@ -258,23 +232,3 @@ Somente em b: run-command.o
  
  	strbuf_addstr(&template_path, template_dir);
  	strbuf_complete(&template_path, '/');
-Somente em b: setup.o
-Somente em b/sha1dc: .depend
-Somente em b/sha256/block: .depend
-Somente em b/t/helper: .depend
-Somente em b/t/unit-tests/clar: .depend
-Somente em b/t/unit-tests: .depend
-Somente em b/trace2: .depend
-Somente em b: unpins_git.c
-Somente em b: unpins_git.h
-Somente em b: unpins_git.o
-Somente em b: unpins_manifest.h
-Somente em b: unpins_templates.h
-Somente em b: unpin_zstd.c
-Somente em b: unpin_zstd.h
-Somente em b: unpin_zstd.o
-Somente em b: vfs.c
-Somente em b: vfs.h
-Somente em b: vfs.o
-Somente em b/xdiff: .depend
-Somente em b: zstddeclib.c

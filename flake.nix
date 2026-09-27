@@ -45,8 +45,8 @@
         let
           # darwin renames busybox's symbols with llvm-objcopy, which needs
           # machine code: the engine's own no-LTO door there, the one x264
-          # takes. Elsewhere lld -r lowers the bitcode itself.
-          # Base set as nix-lib builds it: pkgsCross when the host differs
+          # takes. Elsewhere lld -r lowers the bitcode itself. Its base set is
+          # the one nix-lib builds on: pkgsCross when the host differs
           # (darwin-x86_64 is built on arm64).
           buildSys = hostPkgs.stdenv.buildPlatform.system;
           hostSys = hostPkgs.stdenv.hostPlatform.system;
