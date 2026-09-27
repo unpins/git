@@ -82,11 +82,17 @@ stdenv.mkDerivation {
   '' + lib.optionalString isDarwin ''
     # GNU-isms libbb needs, and clang has no -static-libgcc.
     cp ${./darwin_compat.h} include/unpins_darwin_compat.h
+    # macOS's getopt() reads optind = 0 as "no options" (head, tail, ...
+    # saw their own name as a file); its reset is BSD's.
+    substituteInPlace include/libbb.h \
+      --replace-fail '#define GETOPT_RESET() (optind = 0)' \
+                     '#define GETOPT_RESET() (optreset = 1, optind = 1)'
     sed -i '1i #include "unpins_darwin_compat.h"' include/platform.h
     sed -i 's/-static-libgcc//' Makefile.flags
   '';
 
-  # LD stays busybox's own `$(CC) -nostdlib`: ld64 has no -nostdlib.
+  # LD stays busybox's own `$(CC) -nostdlib` (ld64 has no -nostdlib) but
+  # for darwin's kbuild links, below.
   configurePhase = ''
     runHook preConfigure
     bbMakeFlags="HOSTCC=cc CC=$CC AR=$AR NM=$NM STRIP=$STRIP OBJCOPY=$OBJCOPY"
@@ -115,27 +121,77 @@ stdenv.mkDerivation {
 
   # Busybox's own final link fails by design (main is gone); everything it
   # would have linked is on its command line, kept in busybox_unstripped.out.
+  #
+  # darwin: ld64.lld has no -r, for kbuild's built-in.o nor for ours. There
+  # kbuild's LD writes each built-in.o as the list of objects it stands for,
+  # and busybox is kept apart by renaming every global it defines instead:
+  # an archive of those objects, which Mach-O linkers search in any order.
   buildPhase = ''
     runHook preBuild
+  '' + (if isDarwin then ''
+    cat > unpins-ld-list <<'EOS'
+    #!/bin/sh
+    out= ins=
+    while [ $# -gt 0 ]; do
+      case $1 in -o) out=$2; shift 2 ;; -*) shift ;; *) ins="$ins $1"; shift ;; esac
+    done
+    { echo '!<unpins-list>'
+      for f in $ins; do
+        case $(head -c 14 "$f") in
+          '!<unpins-list>') tail -n +2 "$f" ;;
+          '!<arch>'*) ;;
+          *) echo "$f" ;;
+        esac
+      done; } > "$out"
+    EOS
+    chmod +x unpins-ld-list
+    bbMakeFlags="$bbMakeFlags LD=$PWD/unpins-ld-list"
+    make -k -j$NIX_BUILD_CORES $bbMakeFlags busybox_unstripped || true
+    make -s $bbMakeFlags --eval 'unpins-objs: ; @echo $(busybox-all) > unpins-objs.txt' unpins-objs
+
+    mkdir bbo
+    i=0
+    add() { i=$((i + 1)); cp "$1" "bbo/$(printf %04d $i)-''${1##*/}"; }
+    for f in $(cat unpins-objs.txt); do
+      case $(head -c 14 "$f") in
+        '!<unpins-list>') for o in $(tail -n +2 "$f"); do add "$o"; done ;;
+        '!<arch>'*)
+          rm -rf arx && mkdir arx
+          (cd arx && $AR x "../$f")
+          for o in arx/*.o; do [ -e "$o" ] && add "$o"; done ;;
+        *) add "$f" ;;
+      esac
+    done
+    [ "$i" -gt 0 ]
+
+    $NM --defined-only --extern-only -j bbo/*.o 2>/dev/null | grep -v -e ':$' -e '^$' | sort -u \
+      | grep -vx ${lib.concatMapStringsSep " " (s: "-e ${sym s}") entries} \
+      | sed 's/^_\(.*\)$/_\1 _unpins_bbx_\1/' > syms.map
+    echo "busybox: renaming $(wc -l < syms.map) symbols"
+    for o in bbo/*.o; do $OBJCOPY --redefine-syms=syms.map "$o"; done
+    $AR rcs busybox.a bbo/*.o
+    $NM --defined-only --extern-only -j busybox.a 2>/dev/null > defined.txt
+    for s in ${lib.concatMapStringsSep " " sym entries}; do
+      grep -qx "$s" defined.txt || { echo "busybox: $s not defined" >&2; exit 1; }
+    done
+    if grep -v -e '^_unpins_bb' -e ':$' -e '^$' defined.txt; then
+      echo "busybox: globals above escaped the renaming" >&2; exit 1
+    fi
+  '' else ''
     make -k -j$NIX_BUILD_CORES $bbMakeFlags busybox_unstripped${host.extensions.executable} || true
     objs=$(sed -n 's/.*-o busybox_unstripped\(.exe\)\{0,1\} //p' busybox_unstripped${host.extensions.executable}.out \
              | tr ' ' '\n' | grep -E '\.(o|a)$' | grep -v '^win32/resources/')
     [ -n "$objs" ] || { cat busybox_unstripped*.out >&2; exit 1; }
-    ${if isDarwin then ''
-      $LD -r -o busybox.o \
-        ${lib.concatMapStringsSep " " (s: "-u ${sym s} -exported_symbol ${sym s}") entries} \
-        $objs
-    '' else ''
-      $LD -r -o busybox.o ${lib.concatMapStringsSep " " (s: "-u ${sym s}") entries} \
-        --start-group $objs --end-group
-      $OBJCOPY ${lib.concatMapStringsSep " " (s: "--keep-global-symbol=${sym s}") entries} busybox.o
-    ''}
+    $LD -r -o busybox.o ${lib.concatMapStringsSep " " (s: "-u ${sym s}") entries} \
+      --start-group $objs --end-group
+    $OBJCOPY ${lib.concatMapStringsSep " " (s: "--keep-global-symbol=${sym s}") entries} busybox.o
+  '') + ''
     runHook postBuild
   '';
 
   installPhase = ''
     runHook preInstall
-    install -Dm644 busybox.o $out/lib/busybox.o
+    install -Dm644 busybox.${if isDarwin then "a" else "o"} -t $out/lib
     install -Dm644 .config $out/share/busybox.config
     runHook postInstall
   '';

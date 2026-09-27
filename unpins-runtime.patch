@@ -163,7 +163,7 @@ Somente em b: GIT-VERSION-FILE
 Somente em b: help.o
 --- a/Makefile
 +++ b/Makefile
-@@ -2689,6 +2689,22 @@
+@@ -2689,6 +2689,28 @@
  
  OBJECTS += multicall.o
  
@@ -181,12 +181,18 @@ Somente em b: help.o
 +unpin_zstd.o: EXTRA_CPPFLAGS = -w $(unpins_miniz_defs) -DUNPIN_ZSTD_VENDORED
 +# In libgit.a: common-main.o and run-command.o call into it from every program.
 +LIB_OBJS += unpins_git.o vfs.o miniz.o unpin_zstd.o
++# darwin: an archive of renamed objects instead (ld64.lld has no -r); Mach-O
++# linkers search archives in any order.
++ifneq ($(wildcard busybox.a),)
++GITLIBS += busybox.a
++else
 +$(LIB_FILE): busybox.o
++endif
 +
  $(unpins_mc_programs): git$X
  	$(QUIET_LNCP)$(RM) $@ && ln $< $@ 2>/dev/null || ln -s $< $@ 2>/dev/null || cp $< $@
  
-@@ -2975,14 +2991,14 @@
+@@ -2975,14 +2997,14 @@
  
  exec-cmd.sp exec-cmd.s exec-cmd.o: GIT-PREFIX
  exec-cmd.sp exec-cmd.s exec-cmd.o: EXTRA_CPPFLAGS = \

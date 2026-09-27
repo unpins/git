@@ -85,9 +85,9 @@
             cp ${./unpins_git.c} unpins_git.c
             cp ${./unpins_git.h} unpins_git.h
             cp ${ulib.vfsCore}/*.c ${ulib.vfsCore}/*.h .
-            cp ${busybox}/lib/busybox.o busybox.o
+            cp ${busybox}/lib/busybox.* .
             chmod u+w multicall.[ch] unpins_git.[ch] vfs.[ch] miniz.[ch] \
-              unpin_zstd.[ch] zstddeclib.c busybox.o
+              unpin_zstd.[ch] zstddeclib.c busybox.*
 
             # What the ZIP can't say for itself: the templates' modes and
             # which exec-path entries are commands.
