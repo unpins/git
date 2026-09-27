@@ -215,6 +215,9 @@
             gnugrep   = pkgs.gnugrep;
             coreutils = pkgs.coreutils;
             curl      = curlSchannel;
+            # The same pages the native build embeds; the doc toolchain runs
+            # on the build host.
+            withManual = true;
           }).overrideAttrs (old: {
             # make-shell-wrapper-hook drags target bash via
             # `targetPackages.runtimeShell`; gitMinimal has perlSupport=false
@@ -318,7 +321,7 @@
       # libpsl's .dat path is dead (curl's note says why); git's PREFIX only
       # feeds --man-path/--html-path, which name nothing on the target (the
       # native build carries the manual, windows is gitMinimal as is).
-      removeReferences = [ "publicsuffix-list" "git-multicall" "git-minimal-multicall" ];
+      removeReferences = [ "publicsuffix-list" "git-multicall" ];
 
       smoke = [ "--version" ];
       smokePattern = "^git version ";
