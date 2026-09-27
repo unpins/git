@@ -1,0 +1,14 @@
+--- a/scripts/basic/fixdep.c
++++ b/scripts/basic/fixdep.c
+@@ -342,6 +342,11 @@
+ 	int fd;
+ 	void *map;
+ 
++	/* The unpin-llvm engine serves the libc and compiler headers from a
++	 * virtual root inside the compiler; they have no file to open and never
++	 * change between builds, so there is nothing to track. */
++	if (strncmp(filename, "/__unpin_", 9) == 0)
++		return;
+ 	fd = open(filename, O_RDONLY | O_BINARY);
+ 	if (fd < 0) {
+ 		fprintf(stderr, "fixdep: ");

@@ -1,5 +1,5 @@
 {
-  description = "Standalone build of Git (multicall: helpers folded into single binary)";
+  description = "git as a single self-contained binary";
 
   nixConfig = {
     extra-substituters = [ "https://unpins.cachix.org" ];
@@ -11,96 +11,39 @@
   outputs = { self, unpins-lib }:
     let
       ulib = unpins-lib.lib;
-      # nix-lib's own pin: a private nixpkgs here would keep this package off
-      # the channel the rest of the catalog is built and security-bumped on.
-      nixpkgs = unpins-lib.inputs.nixpkgs;
+      # Scripts git runs from its exec path. Upstream `make install` puts these
+      # in libexec/git-core; here they go into the binary's ZIP instead. With
+      # NO_PERL/NO_PYTHON the perl/python ones are the stubs that say so.
+      gitScripts = [
+        "git-difftool--helper" "git-filter-branch" "git-merge-octopus"
+        "git-merge-one-file" "git-merge-resolve" "git-mergetool"
+        "git-quiltimport" "git-request-pull" "git-submodule" "git-web--browse"
+        "git-mergetool--lib" "git-sh-i18n" "git-sh-setup"
+        "git-archimport" "git-cvsexportcommit" "git-cvsimport" "git-cvsserver"
+        "git-send-email" "git-svn" "git-p4" "git-instaweb"
+      ];
 
-      pkgsFor = system: import nixpkgs { inherit system; };
-
-      # libidn2 (gnulib) defines a global `error` that collides with git's
-      # usage.c at static-link time. Localize the symbol in the archive so
-      # libidn2's internal callers still resolve to their now-local copy
-      # and `error` outside the archive becomes uniquely git's. Avoids
-      # `LDFLAGS=-Wl,--allow-multiple-definition`, which papers over the
-      # collision instead of fixing it.
-      #
-      # Applied via `.overrideAttrs` threaded through curl/libpsl rather
-      # than an overlay — overlays here invalidate `pkgsBuildHost.stdenv`
-      # and force a full gcc rebuild for byte-identical output (see
-      # nix-lib/flake.nix:204 comment).
-      withLocalizedLibidn2 = staticPkgs:
-        let
-          libidn2Fixed = staticPkgs.libidn2.overrideAttrs (old: {
-            postInstall = (old.postInstall or "") + ''
-              if [ -f "$out/lib/libidn2.a" ]; then
-                chmod u+w "$out/lib/libidn2.a"
-                $OBJCOPY --localize-symbol=error "$out/lib/libidn2.a"
-              fi
-            '';
-          });
-          # libpsl re-calls libidn2 in its args; re-thread the fixed one
-          # so curl gets the same instance from both providers.
-          libpslFixed = staticPkgs.libpsl.override { libidn2 = libidn2Fixed; };
-          curlFixed = staticPkgs.curl.override {
-            libidn2 = libidn2Fixed;
-            libpsl  = libpslFixed;
-          };
-        in
-        staticPkgs.gitMinimal.override { curl = curlFixed; };
+      # The ones that are commands; the rest are sourced libraries.
+      execCmds = builtins.filter
+        (n: !(builtins.elem n [ "git-mergetool--lib" "git-sh-i18n" "git-sh-setup" ]))
+        gitScripts ++ [ "git-subtree" ];
 
       # ---------------------------------------------------------------------
-      # Multicall override: drops multicall.[ch] into the source tree and
-      # applies multicall.patch to fold every libexec helper into the main
-      # `git` binary. Each helper file in libexec/git-core/ becomes a
-      # symlink to git$X.
+      # One binary. multicall.patch folds the libexec helpers (daemon,
+      # http-backend, shell, sh-i18n--envsubst, scalar, remote-curl and
+      # friends) into git itself, dispatched by argv[0]. unpins-runtime.patch
+      # links in busybox-w32's ash and applets plus unpin-vfs, and points
+      # GIT_EXEC_PATH and the template dir at /__unpins_git__/, which the VFS
+      # serves from the ZIP runtimeEmbed appends (see unpins_git.c). Every
+      # child git would have exec'd from there is this binary instead, and
+      # `git maintenance start` schedules it by its real path.
       #
-      # Helpers folded:  daemon, http-backend, shell, sh-i18n--envsubst,
-      #                  scalar, remote-curl (+ http/https/ftp/ftps aliases),
-      #                  http-fetch, http-push, imap-send.
-      #
-      # Saves ~80 MB on a static install: each standalone helper carries its
-      # own copy of musl + curl + openssl + expat (~10-14 MB); folding them
-      # all into one shared 15 MB binary collapses that. We keep the
-      # libexec/git-core/git-* symlinks so:
-      #   - git's internal fork+exec finds the helpers via PATH (libexec
-      #     is in GIT_EXEC_PATH); when the helper starts up handle_builtin
-      #     sees argv[0] = "git-<helper>" and dispatches via mc_try_dispatch.
-      #   - the layout matches every other unpins package that keeps
-      #     BUILT_INS-style symlinks alongside the single binary (3-byte
-      #     symlinks don't count as separate binaries).
-      #
-      # The patch is (i) git.c: 2-line edit (include + dispatch call in
-      # handle_builtin), (ii) Makefile: replaces the standalone helper
-      # link rules with an `unpins_mc_*` block that compiles each helper's
-      # .o into the main git$X with -Dcmd_main=cmd_<name>_main. Anchors
-      # are stable across git >= 2.51; the patch fails loud on drift.
+      # `hostPkgs` is the set whose stdenv compiles git: busybox has to be
+      # built by the same compiler, against the same libc.
       # ---------------------------------------------------------------------
-      # `withEmbed` controls whether to apply embed.patch + bundle.nix.
-      # Linux/Darwin: true (ships an embedded dash + the shell-script
-      # helpers).  Cross-mingw: false until bundle.nix can build dash for
-      # mingw (`docs/platforms/mingw.md` notes dash needs a separate
-      # cross-mingw build — task tracked in
-      # [[unpins-git-windows-port-in-progress]]).
-      multicallOverride = { withEmbed ? true, cosmoccDash ? null }: pkgs: gitBase:
-        # buildPackages so the coreutils/find tools used in postInstall
-        # are build-host binaries, not cross-targets. For native builds
-        # buildPackages == pkgs (same drvs) so this costs nothing.
+      runtimeOverride = hostPkgs: gitBase:
         let
-          bp = pkgs.buildPackages;
-          # bundle.nix builds dash → libdash.a + the embed_*.c tables
-          # (one xxd-style blob per shipped libexec/git-core script with
-          # a per-script `. source` dep graph). embed.patch wires it all
-          # into git's link line and adds a `git sh-shim` builtin that
-          # invokes dash_main on the extracted script.
-          #
-          # On mingw, `cosmoccDash` must be set: bundle.nix appends the
-          # cosmocc-built `dash.exe` to the embed table as an extra blob
-          # (libdash.a is omitted from the link; shebangs point at the
-          # extracted dash.exe, resolved via PATH by git's mingw spawn).
-          bundle =
-            if withEmbed
-            then import ./bundle.nix { inherit pkgs cosmoccDash; }
-            else null;
+          busybox = hostPkgs.callPackage ./busybox { };
         in
         gitBase.overrideAttrs (old: {
           pname = (old.pname or "git") + "-multicall";
@@ -108,7 +51,8 @@
           patches = (old.patches or [ ]) ++ [
             ./multicall.patch
             ./scalar-rename-load-builtin.patch
-          ] ++ nixpkgs.lib.optional withEmbed ./embed.patch;
+            ./unpins-runtime.patch
+          ];
 
           configureFlags = (old.configureFlags or [ ]) ++ [
             # Force-enable curl detection. autoconf's AC_CHECK_LIB tries to
@@ -119,100 +63,116 @@
             "ac_cv_lib_curl_curl_global_init=yes"
           ];
 
+          # nixpkgs bakes the build's bash into every script shebang and into
+          # filter-branch's filter runner; the embedded ash reads neither
+          # shebangs nor store paths.
+          makeFlags = builtins.filter (f: !(hostPkgs.lib.hasPrefix "SHELL_PATH=" f))
+            (old.makeFlags or [ ]) ++ [
+              "SHELL_PATH=/bin/sh"
+              # The man pages link the HTML docs, which don't ship: point
+              # them at the published ones instead of the build's htmldir.
+              "MAN_BASE_URL=https://git-scm.com/docs/"
+            ];
+
           # Skip the t/ test suite — we only ship binaries and the suite
-          # takes ~15 min on the runners. Smoke-tested separately via apps.
+          # takes ~15 min on the runners.
           doCheck = false;
           doInstallCheck = false;
 
-          # multicall.patch adds `#include "multicall.h"` to git.c; the
-          # corresponding source files have to exist by the time we compile.
-          # embed.patch additionally references embed.h + dash.h and
-          # links libdash.a + the four generated objects.
           postPatch = (old.postPatch or "") + ''
-            cp ${./multicall.c}     multicall.c
-            cp ${./multicall.h}     multicall.h
-            chmod u+w multicall.c multicall.h
-          '' + nixpkgs.lib.optionalString withEmbed (''
-            cp ${./embed.c}         embed.c
-            cp ${./embed.h}         embed.h
-            cp ${./dash_shim.c}     dash_shim.c
-            cp ${bundle}/embed_data.c  embed_data.c
-            cp ${bundle}/embed_index.c embed_index.c
-            cp ${bundle}/dash.h        dash.h
-            chmod u+w embed.c embed.h dash_shim.c \
-                      embed_data.c embed_index.c dash.h
-          '' + nixpkgs.lib.optionalString (cosmoccDash == null) ''
-            cp ${bundle}/libdash.a     libdash.a
-            chmod u+w libdash.a
-          '');
+            cp ${./multicall.c} multicall.c
+            cp ${./multicall.h} multicall.h
+            cp ${./unpins_git.c} unpins_git.c
+            cp ${./unpins_git.h} unpins_git.h
+            cp ${ulib.vfsCore}/*.c ${ulib.vfsCore}/*.h .
+            cp ${busybox}/lib/busybox.o busybox.o
+            chmod u+w multicall.[ch] unpins_git.[ch] vfs.[ch] miniz.[ch] \
+              unpin_zstd.[ch] zstddeclib.c busybox.o
 
-          # nixpkgs install copies hardlinks as separate files (different
-          # inodes). After multicall the Makefile would normally hardlink
-          # ~50 helper names to git$X; nixpkgs unlinks them into independent
-          # 15 MB copies. Walk $out, hash each file, replace any duplicate
-          # of bin/git with a relative symlink. ~12 collapses on a typical
-          # native install.
-          postInstall = (old.postInstall or "") + ''
-            echo "=== Multicall postInstall: dedup hardlink-copies into symlinks ==="
-            # On Windows cross the canonical name is git.exe, not git.
-            canonical=""
-            for cand in "$out/bin/git" "$out/bin/git.exe"; do
-              if [ -f "$cand" ]; then canonical="$cand"; break; fi
+            # What the ZIP can't say for itself: the templates' modes and
+            # which exec-path entries are commands.
+            {
+              echo 'struct unpins_template { const char *path; int mode; };'
+              echo 'static const struct unpins_template unpins_templates[] = {'
+              for t in $(sed -n 's/^TEMPLATES += //p' templates/Makefile); do
+                if [ -x "templates/$t" ]; then m=0755; else m=0644; fi
+                echo "	{ \"$t\", $m },"
+              done
+              echo '	{ NULL, 0 }'
+              echo '};'
+              echo 'static const char *unpins_exec_cmds[] = {'
+              for c in ${hostPkgs.lib.concatStringsSep " " execCmds}; do
+                echo "	\"$c\","
+              done
+              echo '	NULL'
+              echo '};'
+            } > unpins_manifest.h
+          '';
+
+          # Stage what the ZIP carries, from the build tree: nixpkgs'
+          # postInstall rewrites the installed scripts' sed/grep/awk/... into
+          # store paths, which don't exist where this binary runs.
+          preInstall = (old.preInstall or "") + ''
+            st=$out/share/unpins-git
+            install -d $st/libexec/git-core/mergetools $st/templates
+            for s in ${hostPkgs.lib.concatStringsSep " " gitScripts}; do
+              install -m644 "$s" $st/libexec/git-core/
             done
-            if [ -z "$canonical" ]; then
-              echo "ERROR: no canonical git binary in $out/bin/" >&2
+            install -m644 contrib/subtree/git-subtree $st/libexec/git-core/
+            install -m644 mergetools/* $st/libexec/git-core/mergetools/
+            cp -r templates/blt/. $st/templates/
+
+            # gettext.sh and the locale dir: store paths, and nothing this
+            # binary could find where it runs.
+            sed -i 's#/nix/store/[a-z0-9]\{32\}-[^/"]*#/nonexistent#g' \
+              $st/libexec/git-core/git-sh-i18n
+            # The user's filters run in the same shell as every other script.
+            substituteInPlace $st/libexec/git-core/git-filter-branch \
+              --replace-fail '/bin/sh -c "$filter_commit"' 'sh -c "$filter_commit"'
+            # Its install check takes `:` for the PATH separator; Windows' is `;`.
+            substituteInPlace $st/libexec/git-core/git-subtree \
+              --replace-fail 'test "''${PATH#"''${GIT_EXEC_PATH}:"}" = "$PATH" &&' \
+                'test "''${PATH#"''${GIT_EXEC_PATH}:"}" = "$PATH" &&
+            	test "''${PATH#"''${GIT_EXEC_PATH};"}" = "$PATH" &&'
+            # `cd` can't enter the ZIP: list the embedded tools from here.
+            tools=$(cd mergetools && echo *)
+            substituteInPlace $st/libexec/git-core/git-mergetool--lib \
+              --replace-fail '( cd "$MERGE_TOOLS_DIR" && ls )' \
+                "( if test \"\$MERGE_TOOLS_DIR\" = \"\$(git --exec-path)/mergetools\"; then printf '%s\n' $tools; else cd \"\$MERGE_TOOLS_DIR\" && ls; fi )"
+
+            # Modes come from unpins_manifest.h; executable files here would
+            # get their shebangs pointed at the store by patchShebangs.
+            find $st -type f -exec chmod 644 {} +
+          '';
+
+          # Upstream's exec path also holds a copy of git under every dashed
+          # name it answers to (git, git-upload-pack, git-remote-https, ...),
+          # and shells find them there. Here each is an empty entry, which
+          # unpins_git.c and the ash exec hook read as "this binary, by that
+          # name".
+          postInstall = (old.postInstall or "") + ''
+            st=$out/share/unpins-git/libexec/git-core
+            for f in $out/libexec/git-core/*; do
+              n=''${f##*/}
+              [ -d "$f" ] || [ -e "$st/$n" ] || [ -e "$st/''${n%.exe}" ] || : > "$st/$n"
+            done
+            [ -e "$st/git${hostPkgs.stdenv.hostPlatform.extensions.executable}" ] \
+              || { echo "no git in $out/libexec/git-core" >&2; exit 1; }
+          '';
+
+          postFixup = (old.postFixup or "") + ''
+            if grep -rl /nix/store $out/share/unpins-git; then
+              echo "store path in the embedded runtime" >&2
               exit 1
             fi
-
-            canonical_size=$(${bp.coreutils}/bin/stat -c%s "$canonical")
-            canonical_sum=$(${bp.coreutils}/bin/sha256sum "$canonical" | ${bp.coreutils}/bin/cut -d' ' -f1)
-            replaced=0
-
-            while IFS= read -r f; do
-              [ -z "$f" ] && continue
-              [ "$f" = "$canonical" ] && continue
-              [ -L "$f" ] && continue
-              sum=$(${bp.coreutils}/bin/sha256sum "$f" | ${bp.coreutils}/bin/cut -d' ' -f1)
-              if [ "$sum" = "$canonical_sum" ]; then
-                target=$(${bp.coreutils}/bin/realpath --relative-to="$(${bp.coreutils}/bin/dirname "$f")" "$canonical")
-                chmod -R u+w "$(${bp.coreutils}/bin/dirname "$f")" 2>/dev/null || true
-                rm -f "$f"
-                ln -s "$target" "$f"
-                replaced=$((replaced + 1))
-              fi
-            done < <(${bp.findutils}/bin/find "$out" -type f -size "''${canonical_size}c")
-
-            echo "Multicall dedup: replaced $replaced files (-> $canonical)"
-
-            # Embedded-script vestige cleanup: every script we ship
-            # inside the binary becomes dead weight in libexec/git-core
-            # (worse: the install-time shebangs point at a Nix store
-            # bash that doesn't exist on the target). Remove them so
-            # GIT_EXEC_PATH lookups fall through to our extract dir
-            # only. The C-helper symlinks (git-daemon, etc.) stay —
-            # they're routed by multicall, unrelated to embed.
-            for n in git-archimport git-citool git-cvsexportcommit \
-                     git-cvsimport git-cvsserver git-difftool--helper \
-                     git-filter-branch git-gui--askpass git-instaweb \
-                     git-merge-octopus git-merge-one-file git-merge-resolve \
-                     git-mergetool git-mergetool--lib git-p4 \
-                     git-quiltimport git-request-pull git-sh-i18n \
-                     git-sh-setup git-submodule git-subtree git-web--browse; do
-              ${bp.coreutils}/bin/rm -f "$out/libexec/git-core/$n"
-            done
-            ${bp.coreutils}/bin/rm -rf "$out/libexec/git-core/mergetools"
           '';
         });
 
-      # ---------------------------------------------------------------------
-      # Native build (Linux/Darwin). pkgsStatic.gitMinimal yields a fully
-      # static musl binary on Linux; on Darwin libSystem stays dynamic
-      # (Apple constraint) but everything else is statically linked,
-      # making the binary portable across any macOS without a /nix/store.
-      # ---------------------------------------------------------------------
-      mkNative = system:
-        let pkgs = pkgsFor system;
-        in multicallOverride { } pkgs (withLocalizedLibidn2 pkgs.pkgsStatic);
+      # The ZIP's root is /__unpins_git__/ at run time.
+      stageRuntime = base: ''
+        cp -r ${base}/share/unpins-git/. "$__unpin_stage/"
+        chmod -R u+w "$__unpin_stage"
+      '';
 
       # ---------------------------------------------------------------------
       # Cross-mingw build (x86_64 Windows). Runs on x86_64-linux runners.
@@ -222,67 +182,10 @@
       # propagation already in place. We thread a Schannel curl through
       # gitMinimal.override so curl avoids the openssl static-link autoconf
       # probe pitfalls (same recipe as `unpins/curl`).
-      #
-      # Embed comes from two halves on mingw:
-      #   - the shell scripts + mergetools/* are blobbed as on Linux/Darwin
-      #     (xxd → embed_data.c), via bundle.nix.
-      #   - dash itself can't be cross-mingw-built (no fork/wait/termios);
-      #     instead `playground/dash`'s cosmocc build emits dash.exe (an
-      #     APE → PE32+ binary with fork() implemented over CreateProcessW).
-      #     bundle.nix appends it to the embed table; embed.c rewrites
-      #     script shebangs to `#!/dash.exe`, and git's parse_interpreter
-      #     (compat/mingw.c) resolves the basename via PATH at run time.
       # ---------------------------------------------------------------------
-      mkMingw =
+      mkMingw = pkgs:
         let
-          pkgs = pkgsFor "x86_64-linux";
           cross = ulib.mingwStaticCross pkgs;
-
-          # cosmocc-built dash → APE binary, then `apelink -V 4` extracts
-          # the Windows-only PE32+ image. Inlined here (rather than a
-          # separate flake input) because the only consumer is mkMingw's
-          # embed blob — same shape as `playground/dash/flake.nix`. The
-          # cosmocc toolchain comes from unpins-lib (which wraps cosmocc.zip
-          # + cc-wrapper around it); build is short enough that decoupling
-          # into a separate input buys nothing.
-          cosmoccTc = (ulib.cosmoStdenv pkgs).cosmocc;
-          cosmoccDash = pkgs.stdenvNoCC.mkDerivation rec {
-            pname = "cosmocc-dash";
-            version = "0.5.12";
-            src = pkgs.fetchurl {
-              url = "http://gondor.apana.org.au/~herbert/dash/files/dash-${version}.tar.gz";
-              hash = "sha256-akdKxG6LCzKRbExg32lMggWNMpfYs4W3RQgDDKSo8oo=";
-            };
-            nativeBuildInputs = [ cosmoccTc pkgs.gnumake ];
-            dontPatchELF = true;
-            dontStrip = true;
-            # cosmocc's --host triple disables autotools' run-time probes;
-            # dash's configure only does link probes so this is fine.
-            configureFlags = [ "--host=x86_64-pc-cosmo" "--enable-static" ];
-            configurePhase = ''
-              runHook preConfigure
-              ./configure CC=cosmocc CXX=cosmoc++ AR=cosmoar RANLIB=cosmoranlib \
-                $configureFlags
-              runHook postConfigure
-            '';
-            buildPhase = ''
-              runHook preBuild
-              make -j$NIX_BUILD_CORES
-              runHook postBuild
-            '';
-            installPhase = ''
-              runHook preInstall
-              mkdir -p $out/bin
-              # -V 4 strips the Linux/macOS/BSD halves of the fat APE so
-              # we ship only the Windows PE — cuts the embedded blob to
-              # ~640 KB vs ~1.1 MB for the full fat binary.
-              apelink \
-                -V ${toString cosmoccTc.passthru.apelinkPlatformBits.windows} \
-                -o $out/bin/dash.exe \
-                src/dash.com.dbg
-              runHook postInstall
-            '';
-          };
 
           # Schannel-based static curl — same shape as unpins/curl.
           curlSchannel = ulib.mingwStaticBinary {
@@ -302,9 +205,10 @@
           # gitMinimal with mingw-specific fixes layered on. Each item is
           # documented in `docs/platforms/mingw.md#git`.
           gitMingw = (cross.gitMinimal.override {
-            # Build-host tools used only in postInstall shebang rewriting
-            # of scripts we delete anyway. buildPackages.* avoids spurious
-            # cross-mingw builds of bash/gawk/sed/grep/coreutils.
+            # Build-host tools used only in postInstall's rewrite of the
+            # installed scripts, which don't ship (the ZIP takes them from the
+            # build tree). buildPackages.* avoids spurious cross-mingw builds
+            # of bash/gawk/sed/grep/coreutils.
             bash      = pkgs.bash;
             gawk      = pkgs.gawk;
             gnused    = pkgs.gnused;
@@ -330,6 +234,9 @@
               # real winpthreads <pthread.h> is never included → implicit
               # decl. Drop the gate.
               ./mingw-pthread-sigmask.patch
+              # Hooks are `#!/bin/sh` scripts; with no sh on PATH, run them
+              # with the ash linked into git.exe.
+              ./mingw-unpins-sh.patch
             ];
 
             # Avoid libssp-0.dll (no static stack-protector runtime in
@@ -352,6 +259,11 @@
                 # (which uses Schannel) and disable any direct openssl use.
                 "NO_OPENSSL=YesPlease"
                 "USE_CURL_FOR_IMAP_SEND=YesPlease"
+                # nedmalloc takes over malloc/free for the whole process,
+                # busybox included, which then frees CRT-heap memory with it
+                # (strdup, _fullpath) and gets blocks too loosely aligned for
+                # its jmp_bufs. One allocator: the CRT's.
+                "USE_NED_ALLOCATOR="
                 "CC=${pkgs.pkgsCross.mingwW64.stdenv.cc.targetPrefix}gcc"
                 "AR=${pkgs.pkgsCross.mingwW64.stdenv.cc.targetPrefix}ar"
                 "RC=${pkgs.pkgsCross.mingwW64.stdenv.cc.targetPrefix}windres -O coff"
@@ -390,22 +302,39 @@
             '';
           });
         in
-        multicallOverride { inherit cosmoccDash; } pkgs gitMingw;
+        runtimeOverride cross gitMingw;
     in
-    {
-      packages =
-        let nativePackages = ulib.forAllNative (system: { default = mkNative system; });
-        in nativePackages // {
-          x86_64-linux = nativePackages.x86_64-linux // {
-            "windows-x86_64" = mkMingw;
-          };
-        };
+    ulib.mkStandaloneFlake {
+      inherit self;
+      name = "git";
+      pkgsAttr = "gitMinimal";
+      license = "GPL-2.0-only";
 
-      apps = ulib.forAllNative (system: {
-        default = {
-          type = "app";
-          program = "${self.packages.${system}.default}/bin/git";
-        };
-      });
+      # libpsl's .dat path is dead (curl's note says why); git's PREFIX only
+      # feeds --man-path/--html-path, which name nothing on the target (the
+      # native build carries the manual, windows is gitMinimal as is).
+      removeReferences = [ "publicsuffix-list" "git-multicall" "git-minimal-multicall" ];
+
+      smoke = [ "--version" ];
+      smokePattern = "^git version ";
+
+      engine = "unpin-llvm";
+      # What upstream's `make install` puts in bin/ besides git.
+      multicall.programs = [{
+        name = "git";
+        aliases = [ "git-receive-pack" "git-upload-pack" "git-upload-archive"
+                    "git-shell" "git-http-backend" "scalar" ];
+      }];
+
+      # nixpkgs turns the manual off for LLVM stdenvs; its tools (asciidoc,
+      # xmlto) are build-host ones and work the same here.
+      build = pkgs: runtimeOverride pkgs.pkgsStatic
+        (pkgs.pkgsStatic.gitMinimal.override { withManual = true; });
+      windowsBuild = mkMingw;
+
+      runtimeEmbed = {
+        native = pkgs: base: { runtimeStage = stageRuntime base; };
+        windows = pkgs: base: { runtimeStage = stageRuntime base; };
+      };
     };
 }

@@ -14,11 +14,4 @@ jobs:
     permissions:
       contents: write
     uses: unpins/action-build/.github/workflows/build.yml@main
-    with:
-      # This flake is hand-rolled, not mkStandaloneFlake, so it exposes no
-      # `manifest` attr for build.yml to read the name from.
-      package_name: 'git'
-      # git needs its own share/ at runtime (templates, git-core), so the data
-      # tarball is a real asset here, unlike the packages the engine wraps.
-      package_data: true
     secrets: inherit

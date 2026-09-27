@@ -1,0 +1,274 @@
+Somente em b/builtin: .depend
+--- a/builtin/gc.c
++++ b/builtin/gc.c
+@@ -14,6 +14,7 @@
+ #define DISABLE_SIGN_COMPARE_WARNINGS
+ 
+ #include "builtin.h"
++#include "unpins_git.h"
+ #include "abspath.h"
+ #include "date.h"
+ #include "dir.h"
+@@ -2493,7 +2494,7 @@
+ 		   "<key>Label</key><string>%s</string>\n"
+ 		   "<key>ProgramArguments</key>\n"
+ 		   "<array>\n"
+-		   "<string>%s/git</string>\n"
++		   "<string>%s</string>\n"
+ 		   "<string>--exec-path=%s</string>\n"
+ 		   "%s" /* For extra config parameters. */
+ 		   "<string>for-each-repo</string>\n"
+@@ -2505,7 +2506,7 @@
+ 		   "</array>\n"
+ 		   "<key>StartCalendarInterval</key>\n"
+ 		   "<array>\n";
+-	strbuf_addf(&plist, preamble, name, exec_path, exec_path,
++	strbuf_addf(&plist, preamble, name, unpins_self_exe(), exec_path,
+ 		    get_extra_launchctl_strings(), frequency);
+ 
+ 	switch (schedule) {
+@@ -2741,12 +2742,12 @@
+ 	      "</Settings>\n"
+ 	      "<Actions Context=\"Author\">\n"
+ 	      "<Exec>\n"
+-	      "<Command>\"%s\\headless-git.exe\"</Command>\n"
++	      "<Command>\"%s\"</Command>\n"
+ 	      "<Arguments>--exec-path=\"%s\" %s for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=%s</Arguments>\n"
+ 	      "</Exec>\n"
+ 	      "</Actions>\n"
+ 	      "</Task>\n";
+-	fprintf(tfile->fp, xml, exec_path, exec_path,
++	fprintf(tfile->fp, xml, unpins_self_exe(), exec_path,
+ 		get_extra_config_parameters(), frequency);
+ 	strvec_split(&child.args, cmd);
+ 	strvec_pushl(&child.args, "/create", "/tn", name, "/f", "/xml",
+@@ -2898,8 +2899,8 @@
+ 			"# replaced in the future by a Git command.\n\n");
+ 
+ 		strbuf_addf(&line_format,
+-			    "%%d %%s * * %%s \"%s/git\" --exec-path=\"%s\" %s for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=%%s\n",
+-			    exec_path, exec_path, get_extra_config_parameters());
++			    "%%d %%s * * %%s \"%s\" --exec-path=\"%s\" %s for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=%%s\n",
++			    unpins_self_exe(), exec_path, get_extra_config_parameters());
+ 		fprintf(cron_in, line_format.buf, minute, "1-23", "*", "hourly");
+ 		fprintf(cron_in, line_format.buf, minute, "0", "1-6", "daily");
+ 		fprintf(cron_in, line_format.buf, minute, "0", "0", "weekly");
+@@ -3100,7 +3101,7 @@
+ 	       "\n"
+ 	       "[Service]\n"
+ 	       "Type=oneshot\n"
+-	       "ExecStart=\"%s/git\" --exec-path=\"%s\" %s for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=%%i\n"
++	       "ExecStart=\"%s\" --exec-path=\"%s\" %s for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=%%i\n"
+ 	       "LockPersonality=yes\n"
+ 	       "MemoryDenyWriteExecute=yes\n"
+ 	       "NoNewPrivileges=yes\n"
+@@ -3110,7 +3111,7 @@
+ 	       "RestrictSUIDSGID=yes\n"
+ 	       "SystemCallArchitectures=native\n"
+ 	       "SystemCallFilter=@system-service\n";
+-	if (fprintf(file, unit, exec_path, exec_path, get_extra_config_parameters()) < 0) {
++	if (fprintf(file, unit, unpins_self_exe(), exec_path, get_extra_config_parameters()) < 0) {
+ 		error(_("failed to write to '%s'"), filename);
+ 		fclose(file);
+ 		goto error;
+Somente em b: command-list.h
+--- a/common-main.c
++++ b/common-main.c
+@@ -1,10 +1,14 @@
+ #include "git-compat-util.h"
+ #include "common-init.h"
++#include "unpins_git.h"
+ 
+ int main(int argc, const char **argv)
+ {
+ 	int result;
+ 
++	if (unpins_dispatch(&argc, &argv, &result))
++		return result;
++
+ 	init_git(argv);
+ 	result = cmd_main(argc, argv);
+ 
+Somente em b: common-main.o
+Somente em b/compat: .depend
+Somente em b/compat/linux: .depend
+Somente em b/compat/simple-ipc: .depend
+Somente em b/compiler-tricks: .depend
+Somente em b: .depend
+Somente em b/ewah: .depend
+Somente em b: exec-cmd.o
+--- a/git.c
++++ b/git.c
+@@ -932,6 +932,15 @@
+ 
+ 	trace_command_performance(argv);
+ 
++	/* `scalar` has no `git-` prefix to reach handle_builtin() by. */
++	if (!strcmp(cmd, "scalar") || !strcasecmp(cmd, "scalar.exe")) {
++		struct strvec mc = STRVEC_INIT;
++		strvec_push(&mc, "scalar");
++		strvec_pushv(&mc, argv + 1);
++		mc_try_dispatch(&mc);
++		strvec_clear(&mc);
++	}
++
+ 	/*
+ 	 * "git-xxxx" is the same as "git xxxx", but we obviously:
+ 	 *
+Somente em b: GIT-CFLAGS
+Somente em b: git.o
+Somente em b: GIT-PREFIX
+Somente em b: GIT-VERSION-FILE
+--- a/help.c
++++ b/help.c
+@@ -11,6 +11,7 @@
+ #include "gettext.h"
+ #include "hash.h"
+ #include "help.h"
++#include "unpins_git.h"
+ #include "command-list.h"
+ #include "string-list.h"
+ #include "column.h"
+@@ -250,15 +251,27 @@
+ 					 const char *path,
+ 					 const char *prefix)
+ {
+-	DIR *dir = opendir(path);
++	DIR *dir;
+ 	struct dirent *de;
+ 	struct strbuf buf = STRBUF_INIT;
++	const char **zip_cmds;
+ 	int len;
+ 
+-	if (!dir)
+-		return;
+ 	if (!prefix)
+ 		prefix = "git-";
++	zip_cmds = unpins_exec_path_cmds(path);
++	if (zip_cmds) {
++		for (; *zip_cmds; zip_cmds++) {
++			const char *ent;
++
++			if (skip_prefix(*zip_cmds, prefix, &ent))
++				add_cmdname(cmds, ent, strlen(ent));
++		}
++		return;
++	}
++	dir = opendir(path);
++	if (!dir)
++		return;
+ 
+ 	strbuf_addf(&buf, "%s/", path);
+ 	len = buf.len;
+Somente em b: help.o
+--- a/Makefile
++++ b/Makefile
+@@ -2689,6 +2689,22 @@
+ 
+ OBJECTS += multicall.o
+ 
++# === unpins runtime: scripts/templates from the embedded ZIP, busybox linked in ===
++unpins_root := /__unpins_git__/
++unpins_miniz_defs := -DMINIZ_USE_ZSTD -DMINIZ_NO_TIME -DMINIZ_NO_ARCHIVE_WRITING_APIS \
++	-DMINIZ_NO_ZLIB_APIS -DMINIZ_NO_ZLIB_COMPATIBLE_NAMES
++ifeq ($(uname_S),MINGW)
++unpins_vfs_defs := -DUNPIN_VFS_WIN_MARKER='"__unpins_git__"'
++else
++unpins_vfs_defs := -DUNPIN_VFS_NOWRAP
++endif
++vfs.o:        EXTRA_CPPFLAGS = -DUNPIN_VFS_SELF -DUNPIN_VFS_ROOT='"$(unpins_root)"' $(unpins_vfs_defs) $(unpins_miniz_defs)
++miniz.o:      EXTRA_CPPFLAGS = -w $(unpins_miniz_defs)
++unpin_zstd.o: EXTRA_CPPFLAGS = -w $(unpins_miniz_defs) -DUNPIN_ZSTD_VENDORED
++# In libgit.a: common-main.o and run-command.o call into it from every program.
++LIB_OBJS += unpins_git.o vfs.o miniz.o unpin_zstd.o
++$(LIB_FILE): busybox.o
++
+ $(unpins_mc_programs): git$X
+ 	$(QUIET_LNCP)$(RM) $@ && ln $< $@ 2>/dev/null || ln -s $< $@ 2>/dev/null || cp $< $@
+ 
+@@ -2975,14 +2991,14 @@
+ 
+ exec-cmd.sp exec-cmd.s exec-cmd.o: GIT-PREFIX
+ exec-cmd.sp exec-cmd.s exec-cmd.o: EXTRA_CPPFLAGS = \
+-	'-DGIT_EXEC_PATH="$(gitexecdir_SQ)"' \
++	'-DGIT_EXEC_PATH="$(unpins_root)libexec/git-core"' \
+ 	'-DGIT_LOCALE_PATH="$(localedir_relative_SQ)"' \
+ 	'-DBINDIR="$(bindir_relative_SQ)"' \
+ 	'-DFALLBACK_RUNTIME_PREFIX="$(prefix_SQ)"'
+ 
+ setup.sp setup.s setup.o: GIT-PREFIX
+ setup.sp setup.s setup.o: EXTRA_CPPFLAGS = \
+-	-DDEFAULT_GIT_TEMPLATE_DIR='"$(template_dir_SQ)"'
++	-DDEFAULT_GIT_TEMPLATE_DIR='"$(unpins_root)templates"'
+ 
+ config.sp config.s config.o: GIT-PREFIX
+ config.sp config.s config.o: EXTRA_CPPFLAGS = \
+Somente em b: miniz.c
+Somente em b: miniz.h
+Somente em b: miniz.o
+Somente em b: multicall.c
+Somente em b: multicall.h
+Somente em b/negotiator: .depend
+Somente em b/odb: .depend
+Somente em b/oss-fuzz: .depend
+Somente em b/refs: .depend
+Somente em b/reftable: .depend
+--- a/run-command.c
++++ b/run-command.c
+@@ -2,6 +2,7 @@
+ 
+ #include "git-compat-util.h"
+ #include "run-command.h"
++#include "unpins_git.h"
+ #include "environment.h"
+ #include "exec-cmd.h"
+ #include "gettext.h"
+@@ -738,6 +739,8 @@
+ 
+ 	trace2_child_start(cmd);
+ 	trace_run_command(cmd);
++	/* after tracing: traces keep the command as git meant it */
++	unpins_rewrite_child(cmd);
+ 
+ 	fflush(NULL);
+ 
+Somente em b: run-command.o
+--- a/setup.c
++++ b/setup.c
+@@ -24,6 +24,7 @@
+ #include "quote.h"
+ #include "trace.h"
+ #include "trace2.h"
++#include "unpins_git.h"
+ #include "worktree.h"
+ 
+ static int inside_git_dir = -1;
+@@ -2319,6 +2320,8 @@
+ 
+ 	if (!template_dir || !*template_dir)
+ 		return;
++	if (unpins_copy_templates(template_dir))
++		return;
+ 
+ 	strbuf_addstr(&template_path, template_dir);
+ 	strbuf_complete(&template_path, '/');
+Somente em b: setup.o
+Somente em b/sha1dc: .depend
+Somente em b/sha256/block: .depend
+Somente em b/t/helper: .depend
+Somente em b/t/unit-tests/clar: .depend
+Somente em b/t/unit-tests: .depend
+Somente em b/trace2: .depend
+Somente em b: unpins_git.c
+Somente em b: unpins_git.h
+Somente em b: unpins_git.o
+Somente em b: unpins_manifest.h
+Somente em b: unpins_templates.h
+Somente em b: unpin_zstd.c
+Somente em b: unpin_zstd.h
+Somente em b: unpin_zstd.o
+Somente em b: vfs.c
+Somente em b: vfs.h
+Somente em b: vfs.o
+Somente em b/xdiff: .depend
+Somente em b: zstddeclib.c

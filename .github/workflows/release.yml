@@ -12,7 +12,4 @@ jobs:
     permissions:
       contents: write
     uses: unpins/action-build/.github/workflows/release.yml@main
-    with:
-      package_name: 'git'
-      package_data: true
     secrets: inherit

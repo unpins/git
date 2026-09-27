@@ -1,0 +1,44 @@
+--- a/compat/mingw.c
++++ b/compat/mingw.c
+@@ -10,8 +10,10 @@
+ #include "gettext.h"
+ #include "run-command.h"
+ #include "strbuf.h"
++#include "strvec.h"
+ #include "symlinks.h"
+ #include "trace2.h"
++#include "unpins_git.h"
+ #include "win32.h"
+ #include "win32/lazyload.h"
+ #include "wrapper.h"
+@@ -2118,7 +2120,17 @@
+ 			const char *argv0 = argv[0];
+ 			char *iprog = path_lookup(interpr, 1);
+ 			argv[0] = prog;
+-			if (!iprog) {
++			if (!iprog && (!strcmp(interpr, "sh") || !strcmp(interpr, "bash"))) {
++				/* No sh on PATH: the one linked into this binary. */
++				struct strvec sh = STRVEC_INIT;
++
++				strvec_push(&sh, UNPINS_SH_FLAG);
++				strvec_pushv(&sh, argv);
++				pid = mingw_spawnve_fd(unpins_self_exe(), sh.v, deltaenv,
++						       dir, 1, fhin, fhout, fherr);
++				strvec_clear(&sh);
++			}
++			else if (!iprog) {
+ 				errno = ENOENT;
+ 				pid = -1;
+ 			}
+@@ -3591,6 +3603,11 @@
+ 	size_t maxlen;
+ 	char *buffer, **save;
+ 	const char **argv;
++	int unpins_rc;
++
++	/* busybox, when that's what we were started as (unpins_git.c) */
++	if (unpins_wdispatch(&unpins_rc))
++		return unpins_rc;
+ 
+ 	trace2_initialize_clock();
+ 
