@@ -31,7 +31,7 @@ This installs `git` together with the other commands Git itself installs:
 Commands that are shell scripts upstream (`git submodule`, `git filter-branch`,
 `git mergetool`, `git difftool`, `git subtree`, `git request-pull`, …) work
 with nothing else installed, on Windows too: the binary carries the shell and
-the tools (`sed`, `grep`, `awk`, …) they run with.
+the programs (`sed`, `grep`, `awk`, …) they run with.
 
 ## Man pages
 
@@ -61,7 +61,7 @@ The [Releases](https://github.com/unpins/git/releases) page has standalone binar
   macOS a `#!/bin/sh` hook runs with the system's `/bin/sh`; on Windows, where
   there is none, with the built-in one.
 - **Any file name on Windows.** `git.exe` runs with UTF-8 as its code page, so
-  the shell and its tools handle names in any script, not only those of the
+  the shell and its programs handle names in any script, not only those of the
   system's language. This needs Windows 10 version 1903 or later; on older
   versions they are limited to the system's code page.
 - **`git --exec-path` names a directory inside the binary.** Git and its own
