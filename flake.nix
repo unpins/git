@@ -211,8 +211,6 @@
               scpSupport     = false;
               http3Support   = false;
               libssh2        = null;
-              brotliSupport  = false;
-              zstdSupport    = false;
             };
             filterConfigureFlag = f: f != "--without-ssl";
             extraConfigureFlags = [ "--with-schannel" ];
@@ -309,7 +307,7 @@
                 #   bcrypt    -> BCrypt* (Schannel symmetric/AEAD)
                 #   ws2_32    -> sockets
                 #   ntdll/advapi32 -> RtlGenRandom, registry, etc.
-                "EXTLIBS=-lcurl -lexpat -lnghttp2 -lpsl -lidn2 -lunistring -liconv -lz -lws2_32 -lcrypt32 -lsecur32 -liphlpapi -lntdll -lbcrypt -ladvapi32"
+                "EXTLIBS=-lcurl -lexpat -lnghttp2 -lpsl -lidn2 -lunistring -liconv -lbrotlidec -lbrotlicommon -lzstd -lz -lws2_32 -lcrypt32 -lsecur32 -liphlpapi -lntdll -lbcrypt -ladvapi32"
               ];
 
             # nixpkgs install of MINGW git leaves bare-name symlinks
