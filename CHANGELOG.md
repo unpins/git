@@ -15,4 +15,6 @@
   Linux and macOS. `git init` sets up the usual sample hooks, the Git manual is
   embedded for `unpin man git`, and `unpin install git` also installs `scalar`
   and the server-side commands (`git-upload-pack`, `git-receive-pack`,
-  `git-upload-archive`, `git-shell`, `git-http-backend`).
+  `git-upload-archive`, `git-shell`, `git-http-backend`). `git grep -P` has
+  Perl-compatible regular expressions, and on Windows `git help` opens the
+  manual on git-scm.com.

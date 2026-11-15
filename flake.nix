@@ -89,8 +89,8 @@
               "MAN_BASE_URL=https://git-scm.com/docs/"
             ];
 
-          # Skip the t/ test suite — we only ship binaries and the suite
-          # takes ~15 min on the runners.
+          # The t/ suite is off for its cost (~15 min on the runners); the
+          # end-to-end one in tests/ runs against the shipped binary.
           doCheck = false;
           doInstallCheck = false;
 

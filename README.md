@@ -38,6 +38,9 @@ the programs (`sed`, `grep`, `awk`, …) they run with.
 The Git manual is embedded, so `unpin man git` and `unpin man git git-rebase`
 work offline.
 
+On Windows, `git help <command>` and `git <command> --help` open the page on
+[git-scm.com](https://git-scm.com/docs) in the default browser.
+
 ## Build locally
 
 ```bash
@@ -70,7 +73,10 @@ The [Releases](https://github.com/unpins/git/releases) page has standalone binar
 - **Not included:** `gitk`, `git gui` and `git citool` (Tcl/Tk);
   `git send-email`, `git svn`, `git cvsserver`, `git cvsimport`,
   `git cvsexportcommit`, `git archimport` and `git instaweb` (Perl); `git p4`
-  (Python). These print that they are not available.
+  (Python). These print that they are not available. On macOS,
+  `git-credential-osxkeychain`.
+- **Windows** is built with mingw-w64, and HTTPS goes through Windows' own TLS
+  and certificate store (Schannel) instead of OpenSSL.
 - **`git maintenance start`** schedules this binary itself. On Windows that is
   `git.exe` rather than upstream's windowless `headless-git.exe`, which is not
   included.
