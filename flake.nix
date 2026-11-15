@@ -261,6 +261,7 @@
               # page (Windows 10 1903+): the linked-in busybox takes argv,
               # environ, paths and child command lines through the ANSI APIs.
               ./mingw-utf8-manifest.patch
+              ./mingw-help-web.patch
             ];
 
             # Avoid libssp-0.dll (no static stack-protector runtime in
@@ -307,7 +308,7 @@
                 #   bcrypt    -> BCrypt* (Schannel symmetric/AEAD)
                 #   ws2_32    -> sockets
                 #   ntdll/advapi32 -> RtlGenRandom, registry, etc.
-                "EXTLIBS=-lcurl -lexpat -lpcre2-8 -lnghttp2 -lpsl -lidn2 -lunistring -liconv -lbrotlidec -lbrotlicommon -lzstd -lz -lws2_32 -lcrypt32 -lsecur32 -liphlpapi -lntdll -lbcrypt -ladvapi32"
+                "EXTLIBS=-lcurl -lexpat -lpcre2-8 -lnghttp2 -lpsl -lidn2 -lunistring -liconv -lbrotlidec -lbrotlicommon -lzstd -lz -lws2_32 -lcrypt32 -lsecur32 -liphlpapi -lntdll -lbcrypt -ladvapi32 -lshell32"
               ];
 
             # nixpkgs install of MINGW git leaves bare-name symlinks

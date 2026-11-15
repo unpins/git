@@ -1,0 +1,38 @@
+The mingw build defaults help.format to html, and the HTML manual does not
+ship: `git help <cmd>` and `git <cmd> --help` died looking for a local page.
+Default the HTML path to the published manual (help.htmlPath still overrides
+it) and hand the page to the default browser with ShellExecute, as Git for
+Windows does: git-web--browse finds no browser here (it looks for /bin/start)
+and help.browser is not consulted.
+
+--- a/builtin/help.c
++++ b/builtin/help.c
+@@ -17,6 +17,7 @@
+ #include "help.h"
+ #include "alias.h"
+ #include "setup.h"
++#include <shellapi.h>
+ 
+ #ifndef DEFAULT_HELP_FORMAT
+ #define DEFAULT_HELP_FORMAT "man"
+@@ -545,7 +546,7 @@
+ 	char *to_free = NULL;
+ 
+ 	if (!path)
+-		path = to_free = system_path(GIT_HTML_PATH);
++		path = "https://git-scm.com/docs";
+ 
+ 	/*
+ 	 * Check that the page we're looking for exists.
+@@ -564,7 +565,10 @@
+ 
+ static void open_html(const char *path)
+ {
+-	execl_git_cmd("web--browse", "-c", "help.browser", path, (char *)NULL);
++	/* The default browser, as Git for Windows does. */
++	if ((INT_PTR)ShellExecuteA(NULL, "open", path, NULL, NULL,
++				   SW_SHOWNORMAL) <= 32)
++		die(_("could not open '%s'"), path);
+ }
+ 
+ static void show_html_page(const char *page)
