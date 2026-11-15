@@ -1,0 +1,35 @@
+darwin: the GNU-isms libbb needs come from unpins_darwin_compat.h; macOS's
+getopt() reads optind = 0 as "no options" (head, tail, ... saw their own name
+as a file), so the reset is BSD's; and clang has no -static-libgcc.
+
+--- a/include/libbb.h
++++ b/include/libbb.h
+@@ -1651,7 +1651,7 @@
+  * (to interpret it as if optreset was set).
+  */
+ #if 1 /*def __GLIBC__*/
+-#define GETOPT_RESET() (optind = 0)
++#define GETOPT_RESET() (optreset = 1, optind = 1)
+ #else /* BSD style */
+ #define GETOPT_RESET() (optind = 1)
+ #endif
+--- a/include/platform.h
++++ b/include/platform.h
+@@ -1,3 +1,4 @@
++#include "unpins_darwin_compat.h"
+ /* vi: set sw=4 ts=4: */
+ /*
+  * Copyright 2006, Bernhard Reutner-Fischer
+--- a/Makefile.flags
++++ b/Makefile.flags
+@@ -66,8 +66,8 @@
+ 
+ ifeq ($(CONFIG_STATIC_LIBGCC),y)
+ # Disable it, for example, if you get
+-# "clang-9: warning: argument unused during compilation: '-static-libgcc'"
+-CFLAGS += $(call cc-option,-static-libgcc,)
++# "clang-9: warning: argument unused during compilation: ''"
++CFLAGS += $(call cc-option,,)
+ endif
+ 
+ CFLAGS += $(call cc-option,-falign-functions=1,)

@@ -1,0 +1,21 @@
+Every exec ash attempts passes through tryexec; paths inside the ZIP are
+re-run as this binary (unpins_bb_exec_virtual).
+
+--- a/shell/ash.c
++++ b/shell/ash.c
+@@ -6950,6 +6950,7 @@
+     interp_t interp;
+ #endif
+ 
++	unpins_bb_exec_virtual(cmd, argv, envp);
+ 	/* Workaround for libtool, which assumes the host is an MSYS2
+ 	 * environment and requires special-case escaping for cmd.exe.
+ 	 * https://github.com/skeeto/w64devkit/issues/50 */
+@@ -6999,6 +7000,7 @@
+ static void
+ tryexec(const char *cmd, char **argv, char **envp)
+ {
++	unpins_bb_exec_virtual(cmd, argv, envp);
+  repeat:
+ #ifdef SYSV
+ 	do {

@@ -1,0 +1,34 @@
+busybox becomes an object inside git. Its main is renamed to the
+unpins_bb_main entry point (unpins_bb.c). unpins_bb.h routes busybox's
+open/stat/access through the VFS, but win32/mingw.c defines the mingw_* calls
+that redirect lands on, so it opts out. On darwin unpins_bb.h makes
+bb_busybox_exec_path a call, and messages.c, which defines it, undoes that.
+
+--- a/libbb/appletlib.c
++++ b/libbb/appletlib.c
+@@ -1299,7 +1299,7 @@
+ #if ENABLE_BUILD_LIBBUSYBOX
+ int lbb_main(char **argv)
+ #else
+-int main(int argc UNUSED_PARAM, char **argv)
++int unpins_bb_main(int argc UNUSED_PARAM, char **argv)
+ #endif
+ {
+ #if 0
+--- a/libbb/messages.c
++++ b/libbb/messages.c
+@@ -31,6 +31,7 @@
+ const char bb_hexdigits_upcase[] ALIGN1 = "0123456789ABCDEF";
+ 
+ #if !ENABLE_PLATFORM_MINGW32
++#undef bb_busybox_exec_path
+ const char bb_busybox_exec_path[] ALIGN1 = CONFIG_BUSYBOX_EXEC_PATH;
+ #else
+ /* Some special shell variables are placed in the environment immediately
+--- a/win32/mingw.c
++++ b/win32/mingw.c
+@@ -1,3 +1,4 @@
++#define UNPINS_BB_NO_REDIRECT
+ #include "libbb.h"
+ #include <userenv.h>
+ #include "lazyload.h"

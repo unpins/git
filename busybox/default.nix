@@ -45,7 +45,11 @@ stdenv.mkDerivation {
 
   # The engine serves libc headers from a virtual root kbuild's fixdep can't
   # open; same patch as the catalog busybox.
-  patches = [ ./fixdep-engine-vroot.patch ];
+  patches = [
+    ./fixdep-engine-vroot.patch
+    ./unpins-entry.patch
+    ./ash-exec-virtual.patch
+  ] ++ lib.optional isDarwin ./darwin-compat.patch;
 
   depsBuildBuild = [ buildPackages.stdenv.cc ];
   # kconfig's own printf-style calls trip -Werror=format-security.
@@ -58,39 +62,10 @@ stdenv.mkDerivation {
   env.NIX_CFLAGS_COMPILE = "-fno-lto" + lib.optionalString isMingw " -mcmodel=small";
 
   postPatch = ''
-    substituteInPlace libbb/appletlib.c \
-      --replace-fail 'int main(int argc UNUSED_PARAM, char **argv)' \
-                     'int unpins_bb_main(int argc UNUSED_PARAM, char **argv)'
     cat ${./unpins_bb.c} >> libbb/appletlib.c
     cat ${./unpins_bb.h} >> include/libbb.h
-    sed -i '1i #define UNPINS_BB_NO_REDIRECT' win32/mingw.c
-    substituteInPlace libbb/messages.c \
-      --replace-fail 'const char bb_busybox_exec_path[]' \
-                     '#undef bb_busybox_exec_path
-    const char bb_busybox_exec_path[]'
-
-    # Every exec ash attempts passes through tryexec; paths inside the ZIP
-    # are re-run as this binary (unpins_bb_exec_virtual).
-    substituteInPlace shell/ash.c \
-      --replace-fail 'tryexec(const char *cmd, char **argv, char **envp)
-    {
-     repeat:' 'tryexec(const char *cmd, char **argv, char **envp)
-    {
-    	unpins_bb_exec_virtual(cmd, argv, envp);
-     repeat:' \
-      --replace-fail '	/* Workaround for libtool, which assumes the host is an MSYS2' \
-                     '	unpins_bb_exec_virtual(cmd, argv, envp);
-    	/* Workaround for libtool, which assumes the host is an MSYS2'
   '' + lib.optionalString isDarwin ''
-    # GNU-isms libbb needs, and clang has no -static-libgcc.
     cp ${./darwin_compat.h} include/unpins_darwin_compat.h
-    # macOS's getopt() reads optind = 0 as "no options" (head, tail, ...
-    # saw their own name as a file); its reset is BSD's.
-    substituteInPlace include/libbb.h \
-      --replace-fail '#define GETOPT_RESET() (optind = 0)' \
-                     '#define GETOPT_RESET() (optreset = 1, optind = 1)'
-    sed -i '1i #include "unpins_darwin_compat.h"' include/platform.h
-    sed -i 's/-static-libgcc//' Makefile.flags
   '';
 
   # LD stays busybox's own `$(CC) -nostdlib` (ld64 has no -nostdlib) but
