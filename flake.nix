@@ -233,6 +233,7 @@
             # The same pages the native build embeds; the doc toolchain runs
             # on the build host.
             withManual = true;
+            withpcre2 = true;
           }).overrideAttrs (old: {
             # make-shell-wrapper-hook drags target bash via
             # `targetPackages.runtimeShell`; gitMinimal has perlSupport=false
@@ -266,7 +267,7 @@
             # mingw-w64; -fno-stack-protector drops the dep entirely).
             env = (old.env or { }) // {
               NIX_CFLAGS_COMPILE =
-                (old.env.NIX_CFLAGS_COMPILE or "") + " -fno-stack-protector";
+                (old.env.NIX_CFLAGS_COMPILE or "") + " -fno-stack-protector -DPCRE2_STATIC";
             };
 
             makeFlags =
@@ -275,7 +276,6 @@
                 "uname_S=MINGW"             # else autoconf injects MSVC flags
                 "MSYSTEM=MINGW64"           # else -D_USE_32BIT_TIME_T trips _WIN64
                 "NO_GETTEXT=YesPlease"      # libintl.h absent
-                "USE_LIBPCRE="              # MINGW block sets =YesPlease unconditionally
                 "INSTALL=install"           # else hardcoded /bin/install fails
                 # Schannel curl => no openssl in tree. imap-send.c
                 # references openssl directly; route its TLS through curl
@@ -307,7 +307,7 @@
                 #   bcrypt    -> BCrypt* (Schannel symmetric/AEAD)
                 #   ws2_32    -> sockets
                 #   ntdll/advapi32 -> RtlGenRandom, registry, etc.
-                "EXTLIBS=-lcurl -lexpat -lnghttp2 -lpsl -lidn2 -lunistring -liconv -lbrotlidec -lbrotlicommon -lzstd -lz -lws2_32 -lcrypt32 -lsecur32 -liphlpapi -lntdll -lbcrypt -ladvapi32"
+                "EXTLIBS=-lcurl -lexpat -lpcre2-8 -lnghttp2 -lpsl -lidn2 -lunistring -liconv -lbrotlidec -lbrotlicommon -lzstd -lz -lws2_32 -lcrypt32 -lsecur32 -liphlpapi -lntdll -lbcrypt -ladvapi32"
               ];
 
             # nixpkgs install of MINGW git leaves bare-name symlinks
@@ -360,6 +360,7 @@
       build = pkgs: runtimeOverride pkgs.pkgsStatic
         (pkgs.pkgsStatic.gitMinimal.override {
           withManual = true;
+          withpcre2 = true;
           inherit (pkgs.buildPackages) bash gawk gnused gnugrep coreutils;
         });
       windowsBuild = mkMingw;
