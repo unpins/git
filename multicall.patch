@@ -1,3 +1,7 @@
+One binary: the libexec helpers (daemon, http-backend, shell,
+sh-i18n--envsubst, scalar, remote-curl and friends) are linked into git
+itself and dispatched by argv[0].
+
 --- a/Makefile
 +++ b/Makefile
 @@ -2665,7 +2665,34 @@ git.sp git.s git.o: EXTRA_CPPFLAGS = \

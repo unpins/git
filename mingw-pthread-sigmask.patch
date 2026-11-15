@@ -1,3 +1,8 @@
+compat/win32/pthread.h gates its pthread_sigmask stub by
+__MINGW64_VERSION_MAJOR, but defines PTHREAD_H first, so the real winpthreads
+<pthread.h> is never included and the call is an implicit declaration. Drop
+the gate.
+
 --- a/compat/win32/pthread.h
 +++ b/compat/win32/pthread.h
 @@ -91,12 +91,10 @@ static inline void *pthread_getspecific(pthread_key_t key)

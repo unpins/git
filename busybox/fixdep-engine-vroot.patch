@@ -1,3 +1,6 @@
+The engine serves libc headers from a virtual root kbuild's fixdep can't
+open; same patch as the catalog busybox.
+
 --- a/scripts/basic/fixdep.c
 +++ b/scripts/basic/fixdep.c
 @@ -342,6 +342,11 @@

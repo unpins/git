@@ -1,3 +1,8 @@
+Links in busybox-w32's ash and applets plus unpin-vfs, and points
+GIT_EXEC_PATH and the template dir at /__unpins_git__/, which the VFS serves
+from the binary's ZIP (unpins_git.c). Every child git would have exec'd from
+there is this binary instead.
+
 --- a/Makefile
 +++ b/Makefile
 @@ -2689,6 +2689,28 @@ endif

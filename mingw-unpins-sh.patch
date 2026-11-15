@@ -1,3 +1,6 @@
+Hooks are `#!/bin/sh` scripts, and Windows has no sh on PATH: run them with
+the ash linked into git.exe.
+
 --- a/compat/mingw.c
 +++ b/compat/mingw.c
 @@ -10,8 +10,10 @@
