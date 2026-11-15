@@ -54,8 +54,9 @@ stdenv.mkDerivation {
   depsBuildBuild = [ buildPackages.stdenv.cc ];
   # kconfig's own printf-style calls trip -Werror=format-security.
   hardeningDisable = [ "format" ];
-  # Native objects: the relocatable link and symbol hiding below work on
-  # machine code, not on bitcode.
+  # The relocatable link and symbol hiding below need machine code. On Linux
+  # `ld -r` lowers the engine's bitcode itself; on darwin the flake passes the
+  # engine's `lto = false` stdenv. Under the engine -fno-lto changes nothing.
   # mingw: no `.refptr.*` COMDATs either. Those are shared by section name
   # across the whole link, and one kept from here would be a local symbol
   # git's own references can't bind to.

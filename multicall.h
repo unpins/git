@@ -2,10 +2,11 @@
  * unpins multicall: dispatch helpers compiled into the main git binary.
  *
  * When git is invoked through a symlink whose name matches one of the
- * supported helpers (e.g. git-remote-https, git-daemon, scalar), the
- * dispatcher in handle_builtin() calls into the helper's renamed
- * cmd_main and exits, instead of falling through to the builtin
- * lookup table.
+ * supported helpers (e.g. git-remote-https, git-daemon), the dispatcher
+ * in handle_builtin() calls into the helper's renamed cmd_main and exits,
+ * instead of falling through to the builtin lookup table. `scalar` has
+ * no `git-` prefix to get there by; cmd_main dispatches it directly
+ * (unpins-runtime.patch).
  */
 #ifndef MULTICALL_H
 #define MULTICALL_H
