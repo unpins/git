@@ -1,0 +1,26 @@
+The scripts run in the ash linked into git, from the binary's ZIP.
+git-filter-branch runs the user's filters in that same shell instead of
+SHELL_PATH. git-subtree's install check takes `:` for the PATH separator,
+and Windows' is `;`.
+
+--- a/contrib/subtree/git-subtree.sh
++++ b/contrib/subtree/git-subtree.sh
+@@ -7,6 +7,7 @@
+ 
+ if test -z "$GIT_EXEC_PATH" || ! test -f "$GIT_EXEC_PATH/git-sh-setup" || {
+ 	test "${PATH#"${GIT_EXEC_PATH}:"}" = "$PATH" &&
++	test "${PATH#"${GIT_EXEC_PATH};"}" = "$PATH" &&
+ 	test ! "$GIT_EXEC_PATH" -ef "${PATH%%:*}" 2>/dev/null
+ }
+ then
+--- a/git-filter-branch.sh
++++ b/git-filter-branch.sh
+@@ -477,7 +477,7 @@
+ 	else
+ 		tree=$(git rev-parse "$commit^{tree}")
+ 	fi
+-	workdir=$workdir @SHELL_PATH@ -c "$filter_commit" "git commit-tree" \
++	workdir=$workdir sh -c "$filter_commit" "git commit-tree" \
+ 		"$tree" $parentstr < ../message > ../map/$commit ||
+ 			die "could not write rewritten commit"
+ done <../revs

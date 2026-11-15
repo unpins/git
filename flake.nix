@@ -66,6 +66,7 @@
             ./multicall.patch
             ./scalar-rename-load-builtin.patch
             ./unpins-runtime.patch
+            ./scripts-embedded-shell.patch
           ];
 
           configureFlags = (old.configureFlags or [ ]) ++ [
@@ -140,18 +141,11 @@
             cp -r templates/blt/. $st/templates/
 
             # gettext.sh and the locale dir: store paths, and nothing this
-            # binary could find where it runs.
+            # binary could find where it runs. A generated file, so not a patch.
             sed -i 's#/nix/store/[a-z0-9]\{32\}-[^/"]*#/nonexistent#g' \
               $st/libexec/git-core/git-sh-i18n
-            # The user's filters run in the same shell as every other script.
-            substituteInPlace $st/libexec/git-core/git-filter-branch \
-              --replace-fail '/bin/sh -c "$filter_commit"' 'sh -c "$filter_commit"'
-            # Its install check takes `:` for the PATH separator; Windows' is `;`.
-            substituteInPlace $st/libexec/git-core/git-subtree \
-              --replace-fail 'test "''${PATH#"''${GIT_EXEC_PATH}:"}" = "$PATH" &&' \
-                'test "''${PATH#"''${GIT_EXEC_PATH}:"}" = "$PATH" &&
-            	test "''${PATH#"''${GIT_EXEC_PATH};"}" = "$PATH" &&'
-            # `cd` can't enter the ZIP: list the embedded tools from here.
+            # `cd` can't enter the ZIP: list the embedded tools from here. Not a
+            # patch: the list is computed at build time.
             tools=$(cd mergetools && echo *)
             substituteInPlace $st/libexec/git-core/git-mergetool--lib \
               --replace-fail '( cd "$MERGE_TOOLS_DIR" && ls )' \
