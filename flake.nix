@@ -43,9 +43,9 @@
       # ---------------------------------------------------------------------
       runtimeOverride = hostPkgs: gitBase:
         let
-          # darwin renames busybox's symbols with llvm-objcopy, which needs
-          # machine code: the engine's own no-LTO door there, the one x264
-          # takes. Elsewhere lld -r lowers the bitcode itself. Its base set is
+          # darwin and mingw rename busybox's symbols with llvm-objcopy, which
+          # needs machine code: the engine's own no-LTO door there, the one
+          # x264 takes. Elsewhere lld -r lowers the bitcode itself. Its base set is
           # the one nix-lib builds on: pkgsCross when the host differs
           # (darwin-x86_64 is built on arm64).
           buildSys = hostPkgs.stdenv.buildPlatform.system;
@@ -57,7 +57,10 @@
             lto = false;
           };
           busybox = hostPkgs.callPackage ./busybox
-            (if hostPkgs.stdenv.hostPlatform.isDarwin then { stdenv = noLto; } else { });
+            (if hostPkgs.stdenv.hostPlatform.isDarwin then { stdenv = noLto; }
+             else if hostPkgs.stdenv.hostPlatform.isWindows
+             then { stdenv = ulib.windowsEngineStdenvSharedNoLto; }
+             else { });
         in
         gitBase.overrideAttrs (old: {
           pname = (old.pname or "git") + "-multicall";
@@ -337,6 +340,9 @@
       smokePattern = "^git version ";
 
       engine = "unpin-llvm";
+      # The .exe goes through the engine's mingw set like the native builds:
+      # nixpkgs' mingw cross set is gcc, whose code would ship in git.exe.
+      multicall.windows = true;
       # What upstream's `make install` puts in bin/ besides git.
       multicall.programs = [{
         name = "git";

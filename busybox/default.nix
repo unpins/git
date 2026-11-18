@@ -29,7 +29,11 @@ let
   darwinOff = [ "FEATURE_USE_SENDFILE" "SHA1_HWACCEL" "SHA256_HWACCEL"
                 "FEATURE_UTMP" "FEATURE_WTMP" ];
 
-  sym = s: (lib.optionalString isDarwin "_") + s;
+  # darwin and mingw keep busybox apart by renaming (see buildPhase): neither
+  # ld64.lld nor lld's COFF port has `-r`.
+  renames = isDarwin || isMingw;
+  pfx = lib.optionalString isDarwin "_";
+  sym = s: pfx + s;
   entries = [ "unpins_bb_main" "unpins_bb_is_applet" ];
 in
 stdenv.mkDerivation {
@@ -55,8 +59,8 @@ stdenv.mkDerivation {
   # kconfig's own printf-style calls trip -Werror=format-security.
   hardeningDisable = [ "format" ];
   # The relocatable link and symbol hiding below need machine code. On Linux
-  # `ld -r` lowers the engine's bitcode itself; on darwin the flake passes the
-  # engine's `lto = false` stdenv. Under the engine -fno-lto changes nothing.
+  # `ld -r` lowers the engine's bitcode itself; on darwin and mingw the flake
+  # passes the engine's `lto = false` stdenv. Under the engine -fno-lto changes nothing.
   # mingw: no `.refptr.*` COMDATs either. Those are shared by section name
   # across the whole link, and one kept from here would be a local symbol
   # git's own references can't bind to.
@@ -104,13 +108,15 @@ stdenv.mkDerivation {
   # Busybox's own final link fails by design (main is gone); everything it
   # would have linked is on its command line, kept in busybox_unstripped.out.
   #
-  # darwin: ld64.lld has no -r, for kbuild's built-in.o nor for ours. There
-  # kbuild's LD writes each built-in.o as the list of objects it stands for,
-  # and busybox is kept apart by renaming every global it defines instead:
-  # an archive of those objects, which Mach-O linkers search in any order.
+  # darwin and mingw: no -r (ld64.lld, lld COFF), for kbuild's built-in.o nor
+  # for ours. There kbuild's LD writes each built-in.o as the list of objects
+  # it stands for, and busybox is kept apart by renaming every global it
+  # defines instead: an archive of those objects, which both linkers search
+  # in any order. mingw leaves out busybox's own resources: git.exe carries
+  # its manifest.
   buildPhase = ''
     runHook preBuild
-  '' + (if isDarwin then ''
+  '' + (if renames then ''
     cat > unpins-ld-list <<'EOS'
     #!/bin/sh
     out= ins=
@@ -128,12 +134,15 @@ stdenv.mkDerivation {
     EOS
     chmod +x unpins-ld-list
     bbMakeFlags="$bbMakeFlags LD=$PWD/unpins-ld-list"
-    make -k -j$NIX_BUILD_CORES $bbMakeFlags busybox_unstripped || true
+    make -k -j$NIX_BUILD_CORES $bbMakeFlags busybox_unstripped${host.extensions.executable} || true
     make -s $bbMakeFlags --eval 'unpins-objs: ; @echo $(busybox-all) > unpins-objs.txt' unpins-objs
 
     mkdir bbo
     i=0
-    add() { i=$((i + 1)); cp "$1" "bbo/$(printf %04d $i)-''${1##*/}"; }
+    add() {
+      case $1 in */win32/resources/*|win32/resources/*) return ;; esac
+      i=$((i + 1)); cp "$1" "bbo/$(printf %04d $i)-''${1##*/}"
+    }
     for f in $(cat unpins-objs.txt); do
       case $(head -c 14 "$f") in
         '!<unpins-list>') for o in $(tail -n +2 "$f"); do add "$o"; done ;;
@@ -148,7 +157,7 @@ stdenv.mkDerivation {
 
     $NM --defined-only --extern-only -j bbo/*.o 2>/dev/null | grep -v -e ':$' -e '^$' | sort -u \
       | grep -vx ${lib.concatMapStringsSep " " (s: "-e ${sym s}") entries} \
-      | sed 's/^_\(.*\)$/_\1 _unpins_bbx_\1/' > syms.map
+      | sed 's/^${pfx}\(.*\)$/${pfx}\1 ${pfx}unpins_bbx_\1/' > syms.map
     echo "busybox: renaming $(wc -l < syms.map) symbols"
     for o in bbo/*.o; do $OBJCOPY --redefine-syms=syms.map "$o"; done
     $AR rcs busybox.a bbo/*.o
@@ -156,7 +165,7 @@ stdenv.mkDerivation {
     for s in ${lib.concatMapStringsSep " " sym entries}; do
       grep -qx "$s" defined.txt || { echo "busybox: $s not defined" >&2; exit 1; }
     done
-    if grep -v -e '^_unpins_bb' -e ':$' -e '^$' defined.txt; then
+    if grep -v -e '^${pfx}unpins_bb' -e ':$' -e '^$' defined.txt; then
       echo "busybox: globals above escaped the renaming" >&2; exit 1
     fi
   '' else ''
@@ -173,7 +182,7 @@ stdenv.mkDerivation {
 
   installPhase = ''
     runHook preInstall
-    install -Dm644 busybox.${if isDarwin then "a" else "o"} -t $out/lib
+    install -Dm644 busybox.${if renames then "a" else "o"} -t $out/lib
     install -Dm644 .config $out/share/busybox.config
     runHook postInstall
   '';
