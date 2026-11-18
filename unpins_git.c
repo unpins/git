@@ -168,6 +168,34 @@ static int zip_entry(struct strbuf *path)
  * binary, as git, as one of its dashed commands, or as the shell. So does
  * anything that needs a shell, so that git's shell is the same everywhere.
  */
+/* Whether spawning `name` directly would find it, as git's own lookup does. */
+static int on_path(const char *name)
+{
+	const char *p = getenv("PATH");
+	struct strbuf sb = STRBUF_INIT;
+	int found = 0;
+
+	while (p && *p && !found) {
+		const char *end = strchrnul(p, PATH_SEP);
+
+		if (end > p) {
+			strbuf_reset(&sb);
+			strbuf_add(&sb, p, end - p);
+			strbuf_addf(&sb, "/%s", name);
+#ifdef GIT_WINDOWS_NATIVE
+			found = !access(sb.buf, F_OK);
+			strbuf_addstr(&sb, ".exe");
+			found = found || !access(sb.buf, F_OK);
+#else
+			found = !access(sb.buf, X_OK);
+#endif
+		}
+		p = *end ? end + 1 : end;
+	}
+	strbuf_release(&sb);
+	return found;
+}
+
 void unpins_rewrite_child(struct child_process *cmd)
 {
 	struct strvec args = STRVEC_INIT;
@@ -178,9 +206,15 @@ void unpins_rewrite_child(struct child_process *cmd)
 		return;
 	arg0 = cmd->args.v[0];
 
-	/* as prepare_shell_cmd() decides: no metacharacter, no shell */
+	/*
+	 * As prepare_shell_cmd() decides: no metacharacter, no shell. Unless
+	 * the command is one of the linked-in applets and nothing on PATH has
+	 * that name (`core.editor=true` on Windows): then the shell runs the
+	 * applet, as it would inside any longer command line.
+	 */
 	if (cmd->use_shell &&
-	    strcspn(arg0, "|&;<>()$`\\\"' \t\n*?[#~=%") == strlen(arg0))
+	    strcspn(arg0, "|&;<>()$`\\\"' \t\n*?[#~=%") == strlen(arg0) &&
+	    !(unpins_bb_is_applet(arg0) && !on_path(arg0)))
 		cmd->use_shell = 0;
 
 	if (cmd->use_shell) {
