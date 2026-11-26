@@ -3,7 +3,9 @@ ship: `git help <cmd>` and `git <cmd> --help` died looking for a local page.
 Default the HTML path to the published manual (help.htmlPath still overrides
 it) and hand the page to the default browser with ShellExecute, as Git for
 Windows does: git-web--browse finds no browser here (it looks for /bin/start)
-and help.browser is not consulted.
+and help.browser is not consulted. The embedded page is named on stderr for
+reading offline, so a browser that cannot be started (an ssh session) is a
+warning, not an error.
 
 --- a/builtin/help.c
 +++ b/builtin/help.c
@@ -32,7 +34,16 @@ and help.browser is not consulted.
 +	/* The default browser, as Git for Windows does. */
 +	if ((INT_PTR)ShellExecuteA(NULL, "open", path, NULL, NULL,
 +				   SW_SHOWNORMAL) <= 32)
-+		die(_("could not open '%s'"), path);
++		warning(_("could not open '%s'"), path);
  }
  
  static void show_html_page(const char *page)
+@@ -573,6 +577,8 @@
+ 
+ 	get_html_page_path(&page_path, page);
+ 
++	/* Offline, the same page is embedded. */
++	fprintf(stderr, "Offline: unpin man git %s\n", page);
+ 	open_html(page_path.buf);
+ }
+ 
