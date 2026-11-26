@@ -39,7 +39,8 @@ The Git manual is embedded, so `unpin man git` and `unpin man git git-rebase`
 work offline.
 
 On Windows, `git help <command>` and `git <command> --help` open the page on
-[git-scm.com](https://git-scm.com/docs) in the default browser.
+[git-scm.com](https://git-scm.com/docs) in the default browser and print the
+`unpin man git` command that shows it offline.
 
 ## Build locally
 

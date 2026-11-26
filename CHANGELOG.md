@@ -17,4 +17,5 @@
   and the server-side commands (`git-upload-pack`, `git-receive-pack`,
   `git-upload-archive`, `git-shell`, `git-http-backend`). `git grep -P` has
   Perl-compatible regular expressions, and on Windows `git help` opens the
-  manual on git-scm.com.
+  manual on git-scm.com and prints the `unpin man git` command that shows the
+  page offline.
